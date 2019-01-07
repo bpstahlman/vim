@@ -13,6 +13,21 @@
 
 #include "vim.h"
 
+typedef struct invloop_stack_S {
+    short *els[20];
+    int len;
+} invloop_stack_T;
+
+/* Inverted loop stack framework */
+#define DECL_INVLOOP_STACK(stk) \
+    invloop_stack_T stk = {{0}, 0}
+#define IS_EMPTY_INVLOOP_STACK(stk) ((stk).len > 0)
+#define PUSH_INVLOOP(stk, pid) \
+    stk.els[stk.len++] = pid + 1;
+#define POP_INVLOOP(stk) \
+    (stk.len > 0 ? stk.els[--stk.len] : (short *)NULL)
+
+
 /*
  * Structure that stores information about a highlight group.
  * The ID of a highlight group is also called group ID.  It is the index in
@@ -447,6 +462,8 @@ static void init_syn_patterns(void);
 static char_u *get_syn_pattern(char_u *arg, synpat_T *ci);
 static int get_id_list(char_u **arg, int keylen, short **list, int skip);
 static void syn_combine_list(short **clstr1, short **clstr2, int list_op);
+inline static int syn_id2idx(short id, int **idxs);
+static void syn_add_idmap(short id, int idx);
 
 #if defined(FEAT_RELTIME) || defined(PROTO)
 /*
@@ -1847,6 +1864,31 @@ get_syntax_attr(
     return attr;
 }
 
+/* Map input id to corresponding list of SYN_ITEMS indices. The list is
+ * returned indirectly via idxs; the number of indices it contains is returned
+ * directly. */
+    inline static int
+syn_id2idx(
+    short id,
+    int **idxs)
+{
+    char_u id_key[2 * sizeof(short) + 1];
+    /* FIXME: For efficiency, provide function/macro that does this manually
+     * (no sprintf). */
+    sprintf((char *)id_key, "%.*x", 2 * (int)sizeof(short), id);
+    hash_T hash = hash_hash(id_key);
+    hashtab_T *ht = &curwin->w_s->b_ht_idmap;
+    hashitem_T *hi = hash_lookup(ht, id_key, hash);
+    if (HASHITEM_EMPTY(hi)) {
+	/* Internal Error! */
+	return 0;
+    } else {
+	syn_idmap_T *map_entry = IDKEY2IDMAP(hi->hi_key);
+	*idxs = map_entry->idxs.ga_data;
+	return map_entry->idxs.ga_len;
+    }
+}
+
 /*
  * Get syntax attributes for current_lnum, current_col.
  */
@@ -1888,6 +1930,7 @@ syn_current_attr(
     int		zero_width_next_list = FALSE;
     garray_T	zero_width_next_ga;
 
+    BPSLOG("%s:Inside syn_current_attr\n", __func__);
     /*
      * No character, no attributes!  Past end of line?
      * Do try matching with an empty line (could be the start of a region).
@@ -2055,22 +2098,92 @@ syn_current_attr(
 		     */
 		    next_match_idx = 0;		/* no match in this line yet */
 		    next_match_col = MAXCOL;
-		    for (idx = syn_block->b_syn_patterns.ga_len; --idx >= 0; )
-		    {
+		    /* Optimization: If syn_block->b_syn_containedin is FALSE
+		     * and neither current_next_list nor cur_si->si_cont_list
+		     * contain special keywords at head (e.g.,
+		     * TOP, ALL, ALLBUT...), we do NOT need to loop over all
+		     * syn patterns! */
+		    /*for (idx = syn_block->b_syn_patterns.ga_len; --idx >= 0; )*/
+		    int inv = !syn_block->b_syn_containedin &&
+			/* TODO: Need to clear inv if first element of
+			 * current_next_list or cur_si->si_cont_list is one of
+			 * the special groups (TOP,ALL,etc...) */
+			/* TODO: Add a list of all groups that can begin at
+			 * toplevel: would permit us to do inverted loop even
+			 * when current_next_list == NULL && cur_si == NULL. */
+			(current_next_list || cur_si);
+
+		    /* Loop initialization */
+		    short *pid = NULL;
+		    int *idxs = NULL, nidxs = 0;
+		    DECL_INVLOOP_STACK(ilstack);
+		    if (inv) {
+			pid = current_next_list ? current_next_list : cur_si->si_cont_list;
+			idx = 0; /* prevent uninitialized warning */
+		    } else {
+			/* Prepare for reverse, pre-decrement iteration of SYN_ITEMS. */
+			idx = syn_block->b_syn_patterns.ga_len;
+		    }
+		    //BPSLOG("%s:Before loop\n", __func__);
+		    /* SYN_ITEMS loop */
+		    for (;;) {
+			if (inv) {
+			    if (nidxs > 0) {
+				/* Continue processing idxs for current id */
+				--nidxs;
+				idx = *idxs++;
+			    } else {
+invloop:
+				/* Grab next id if not NULL */
+				if (!*pid) {
+				    /* At end of current list */
+				    if ((pid = POP_INVLOOP(ilstack)))
+					goto invloop;
+				    else
+					break;
+				}
+				if (*pid >= SYNID_CLUSTER) {
+				    PUSH_INVLOOP(ilstack, pid);
+				    pid = SYN_CLSTR(syn_block)[*pid - SYNID_CLUSTER].scl_list;
+				    goto invloop;
+				} else {
+				    /* Convert non-cluster id to list of SYN_ITEMS indices */
+				    /* TODO: Dynamically maintain singly-linked
+				     * list corresponding to the list of ids to
+				     * obviate need for repeated hash lookups. */
+				    nidxs = syn_id2idx(*pid++, &idxs);
+				    if (--nidxs < 0)
+					/* FIXME: Internal Error! */
+					continue;
+				    idx = *idxs++;
+				}
+			    }
+			} else {
+			    /* Old (slow) nested loop over *all* SYN_ITEMS */
+			    if (--idx < 0)
+				break;
+			}
+
+			//BPSLOG("%s:Got idx=%d\n", __func__, idx);
+			/* Use the idx obtained by either slow or fast method
+			 * to obtain the syn item to test. */
 			spp = &(SYN_ITEMS(syn_block)[idx]);
 			if (	   spp->sp_syncing == syncing
 				&& (displaying || !(spp->sp_flags & HL_DISPLAY))
 				&& (spp->sp_type == SPTYPE_MATCH
 				    || spp->sp_type == SPTYPE_START)
-				&& (current_next_list != NULL
-				    ? in_id_list(NULL, current_next_list,
-							      &spp->sp_syn, 0)
-				    : (cur_si == NULL
-					? !(spp->sp_flags & HL_CONTAINED)
-					: in_id_list(cur_si,
-					    cur_si->si_cont_list, &spp->sp_syn,
-					    spp->sp_flags & HL_CONTAINED))))
-			{
+				/* Note: The costly in_id_list calls can be
+				 * skipped if we're in inverted loop mode. */
+				&& (inv
+				    || (current_next_list != NULL ?
+					in_id_list(NULL, current_next_list,
+					    &spp->sp_syn, 0) : (cur_si == NULL
+						? !(spp->sp_flags &
+						    HL_CONTAINED) :
+						in_id_list(cur_si,
+						    cur_si->si_cont_list,
+						    &spp->sp_syn, spp->sp_flags
+						    & HL_CONTAINED))))) {
 			    int r;
 
 			    /* If we already tried matching in this line, and
@@ -4981,6 +5094,53 @@ error:
     syn_stack_free_all(curwin->w_s);		/* Need to recompute all syntax. */
 }
 
+    static void
+syn_add_idmap(
+    short	id,
+    int		idx)
+{
+    /* Map id->idx */
+    syn_idmap_T *map_entry;
+    /* TODO: Consider using relevant member expression instead
+     * of hard-coding short in sizeof. Also, consider
+     * hard-coding short. */
+    /* Note: Key is short id in hex format. */
+    char_u id_key[2 * sizeof(short) + 1];
+    sprintf((char *)id_key, "%.*x", 2 * (int)sizeof(short), id);
+    BPSLOG("%s:Adding key %s\n", __func__, id_key);
+    hash_T hash = hash_hash(id_key);
+    hashtab_T *ht = &curwin->w_s->b_ht_idmap;
+    BPSLOG("%s:Looking up key %s\n", __func__, id_key);
+    hashitem_T *hi = hash_lookup(ht, id_key, hash);
+    BPSLOG("%s:Looked up key %s\n", __func__, id_key);
+    if (HASHITEM_EMPTY(hi)) {
+	BPSLOG("%s:Creating new...\n", __func__);
+	/* TODO: Since I'm currently assuming short, perhaps
+	 * change syn_idmap_T to a fixed-length struct, or at
+	 * least typedef some stuff to clean up a bit... */
+	map_entry = (syn_idmap_T *)
+	    alloc((int)(sizeof(syn_idmap_T) + 2 * sizeof(short) + 1));
+	if (!map_entry) return; /* FIXME: What to do? */
+	STRCPY(map_entry->id_key, id_key);
+	/* Initialize the growarray for all indices mapped to this id. */
+	ga_init2(&map_entry->idxs, (int)sizeof(int), 5);
+	hash_add_item(ht, hi, map_entry->id_key, hash);
+    } else {
+	BPSLOG("%s:Appending...\n", __func__);
+	/* Append to existing idx list */
+	map_entry = IDKEY2IDMAP(hi->hi_key);
+	if (ga_grow(&map_entry->idxs, 1) == OK) {
+	    BPSLOG("%s:OK\n", __func__);
+	    ((int *)map_entry->idxs.ga_data)[map_entry->idxs.ga_len] = idx;
+	    ++map_entry->idxs.ga_len;
+	    BPSLOG("%s:ga_len=%d\n", __func__, map_entry->idxs.ga_len);
+	} else {
+	    BPSLOG("%s:NOT OK!=\n", __func__);
+	}
+    }
+    BPSLOG("%s:Added key %s\n", __func__, id_key);
+}
+
 /*
  * Handle ":syntax match {name} [{options}] {pattern} [{options}]".
  *
@@ -5279,6 +5439,7 @@ syn_cmd_region(
 	    syn_incl_toplevel(syn_id, &syn_opt_arg.flags);
 	    /*
 	     * Store the start/skip/end in the syn_items list
+	     * BPS: Also, store mapping of id->idx in a hash.
 	     */
 	    idx = curwin->w_s->b_syn_patterns.ga_len;
 	    for (item = ITEM_START; item <= ITEM_END; ++item)
@@ -5310,6 +5471,8 @@ syn_cmd_region(
 			SYN_ITEMS(curwin->w_s)[idx].sp_next_list =
 							syn_opt_arg.next_list;
 		    }
+		    /* TODO: Error check? */
+		    syn_add_idmap(syn_id, idx);
 		    ++curwin->w_s->b_syn_patterns.ga_len;
 		    ++idx;
 #ifdef FEAT_FOLDING

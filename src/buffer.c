@@ -2076,6 +2076,7 @@ buflist_new(
 #ifdef FEAT_SYN_HL
     hash_init(&buf->b_s.b_keywtab);
     hash_init(&buf->b_s.b_keywtab_ic);
+    hash_init(&buf->b_s.b_ht_idmap);
 #endif
 
     buf->b_fname = buf->b_sfname;

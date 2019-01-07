@@ -141,6 +141,8 @@ hash_lookup(hashtab_T *ht, char_u *key, hash_T hash)
      */
     idx = (unsigned)(hash & ht->ht_mask);
     hi = &ht->ht_array[idx];
+    BPSLOG("%s (%p): hash=%lu, idx=%d, key=%s mask=%lu\n",
+	    __func__, ht, hash, idx, key, ht->ht_mask);
 
     if (hi->hi_key == NULL)
 	return hi;
@@ -151,6 +153,8 @@ hash_lookup(hashtab_T *ht, char_u *key, hash_T hash)
     else
 	freeitem = NULL;
 
+    BPSLOG("%s (%p): Initial miss!\n", __func__, ht);
+
     /*
      * Need to search through the table to find the key.  The algorithm
      * to step through the table starts with large steps, gradually becoming
@@ -160,6 +164,7 @@ hash_lookup(hashtab_T *ht, char_u *key, hash_T hash)
      * Return the first available slot found (can be a slot of a removed
      * item).
      */
+    int bps_dbg = 0;
     for (perturb = hash; ; perturb >>= PERTURB_SHIFT)
     {
 #ifdef HT_DEBUG
@@ -167,6 +172,8 @@ hash_lookup(hashtab_T *ht, char_u *key, hash_T hash)
 #endif
 	idx = (unsigned)((idx << 2U) + idx + perturb + 1U);
 	hi = &ht->ht_array[idx & ht->ht_mask];
+	BPSLOG("%s (%p): perturb=%lu idx=%u midx=%d freeitem_key=%s key=%s\n",
+		__func__, ht, perturb, idx, idx & ht->ht_mask, freeitem ? freeitem->hi_key : NULL, hi->hi_key);
 	if (hi->hi_key == NULL)
 	    return freeitem == NULL ? hi : freeitem;
 	if (hi->hi_hash == hash
@@ -175,6 +182,8 @@ hash_lookup(hashtab_T *ht, char_u *key, hash_T hash)
 	    return hi;
 	if (hi->hi_key == HI_KEY_REMOVED && freeitem == NULL)
 	    freeitem = hi;
+	if (bps_dbg++ > 50)
+	    exit(1);
     }
 }
 
@@ -237,6 +246,7 @@ hash_add_item(
     hi->hi_key = key;
     hi->hi_hash = hash;
 
+    BPSLOG("%s (%p): Calling hash_may_resize locked=%d.\n", __func__, ht, ht->ht_locked);
     /* When the space gets low may resize the array. */
     return hash_may_resize(ht, 0);
 }
@@ -332,11 +342,17 @@ hash_may_resize(
     if (ht->ht_locked > 0)
 	return OK;
 
+    BPSLOG("%s (%p): used=%d filled=%d\n", __func__, ht, ht->ht_used, ht->ht_filled);
+#define HT_DEBUG
 #ifdef HT_DEBUG
-    if (ht->ht_used > ht->ht_filled)
+    if (ht->ht_used > ht->ht_filled) {
 	EMSG("hash_may_resize(): more used than filled");
-    if (ht->ht_filled >= ht->ht_mask + 1)
+	BPSLOG("%s (%p): Table More Used Than Filled!\n", __func__, ht);
+    }
+    if (ht->ht_filled >= ht->ht_mask + 1) {
 	EMSG("hash_may_resize(): table completely filled");
+	BPSLOG("%s (%p): Table Filled!\n", __func__, ht);
+    }
 #endif
 
     if (minitems == 0)
@@ -370,6 +386,7 @@ hash_may_resize(
 	minsize = minitems * 3 / 2;	/* array is up to 2/3 full */
     }
 
+    BPSLOG("%s (%p): minsize=%d\n", __func__, ht, minsize);
     newsize = HT_INIT_SIZE;
     while (newsize < minsize)
     {
@@ -377,6 +394,7 @@ hash_may_resize(
 	if (newsize == 0)
 	    return FAIL;	/* overflow */
     }
+    BPSLOG("%s (%p): newsize=%d\n", __func__, ht, newsize);
 
     if (newsize == HT_INIT_SIZE)
     {

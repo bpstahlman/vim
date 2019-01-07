@@ -20,6 +20,29 @@ typedef int		colnr_T;
 typedef unsigned short	short_u;
 #endif
 
+#include <stdarg.h>
+#undef CFG_BPSLOG
+#ifdef CFG_BPSLOG
+static inline int BPSLOG(const char *fmt, ...)
+{
+    static FILE *fp = NULL;
+    if (!fp) {
+	fp = fopen("bps-vim.log", "a");
+    }
+    struct timeval tm;
+    gettimeofday(&tm, NULL);
+    fprintf(fp, "%010ld.%03ld: ", tm.tv_sec, tm.tv_usec / 1000L);
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(fp, fmt, args);
+    fflush(fp);
+    va_end(args);
+    return 0;
+}
+#else
+#define BPSLOG(fmt,...)
+#endif
+
 /*
  * position in file or buffer
  */
@@ -62,6 +85,17 @@ typedef struct growarray
 } garray_T;
 
 #define GA_EMPTY    {0, 0, 0, 0, NULL}
+
+/* Structure used in hashmap that maps syntax id's to SYN_ITEMS indices */
+typedef struct syn_idmap_S {
+    garray_T	idxs;		/* NULL-terminated list of SYN_ITEMS indices */
+    /* syn id in hex string format */
+    char_u	id_key[];	/* actually longer */
+} syn_idmap_T;
+/* Macros mapping key to struct and vice-versa */
+#define IDMAP2IDKEY(idmap)  ((idmap)->id_key)
+#define IDKEY2IDMAP(p)   ((syn_idmap_T *)((p) - offsetof(struct syn_idmap_S, id_key)))
+
 
 typedef struct window_S		win_T;
 typedef struct wininfo_S	wininfo_T;
@@ -1909,6 +1943,7 @@ typedef struct {
     int		b_syn_folditems;	/* number of patterns with the HL_FOLD
 					   flag set */
 # endif
+    hashtab_T	b_ht_idmap;		/* mapping of syn id's to SYN_ITEMS idx */
     /*
      * b_sst_array[] contains the state stack for a number of lines, for the
      * start of that line (col == 0).  This avoids having to recompute the
