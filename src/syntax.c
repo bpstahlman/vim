@@ -21,7 +21,7 @@ typedef struct invloop_stack_S {
 /* Inverted loop stack framework */
 #define DECL_INVLOOP_STACK(stk) \
     invloop_stack_T stk = {{0}, 0}
-#define IS_EMPTY_INVLOOP_STACK(stk) ((stk).len > 0)
+#define IS_EMPTY_INVLOOP_STACK(stk) ((stk).len <= 0)
 #define PUSH_INVLOOP(stk, pid) \
     stk.els[stk.len++] = pid + 1;
 #define POP_INVLOOP(stk) \
@@ -1930,7 +1930,6 @@ syn_current_attr(
     int		zero_width_next_list = FALSE;
     garray_T	zero_width_next_ga;
 
-    BPSLOG("%s:Inside syn_current_attr\n", __func__);
     /*
      * No character, no attributes!  Past end of line?
      * Do try matching with an empty line (could be the start of a region).
@@ -2111,7 +2110,8 @@ syn_current_attr(
 			/* TODO: Add a list of all groups that can begin at
 			 * toplevel: would permit us to do inverted loop even
 			 * when current_next_list == NULL && cur_si == NULL. */
-			(current_next_list || cur_si);
+			(current_next_list && current_next_list != ID_LIST_ALL
+			 || cur_si && cur_si->si_cont_list != ID_LIST_ALL);
 
 		    /* Loop initialization */
 		    short *pid = NULL;
@@ -2124,19 +2124,32 @@ syn_current_attr(
 			/* Prepare for reverse, pre-decrement iteration of SYN_ITEMS. */
 			idx = syn_block->b_syn_patterns.ga_len;
 		    }
-		    //BPSLOG("%s:Before loop\n", __func__);
+		    BPSLOG("%s:Before loop, curr=%s\n",
+			    __func__, cur_si ? (char *)syn_id2name(cur_si->si_id) : "");
 		    /* SYN_ITEMS loop */
 		    for (;;) {
 			if (inv) {
+			    BPSLOG("%s: Just inside inv, nidxs=%d\n", __func__, nidxs);
 			    if (nidxs > 0) {
 				/* Continue processing idxs for current id */
 				--nidxs;
+				BPSLOG("%s: Grabbing next idx @ %p\n", __func__, idxs);
 				idx = *idxs++;
 			    } else {
 invloop:
+#if 0 /* Handled higher up now... */
+				/* FIXME: pid is ID_LIST_ALL (-1)!!!!! */
+				if (pid == ID_LIST_ALL) {
+				    /* FIXME: How to handle? */
+				    ++pid;
+				    continue;
+				}
+#endif
+				BPSLOG("%s: pid=%p *pid=\n", __func__, pid/*, pid ? *pid : -1*/);
 				/* Grab next id if not NULL */
 				if (!*pid) {
 				    /* At end of current list */
+				    BPSLOG("%s: Popping\n", __func__);
 				    if ((pid = POP_INVLOOP(ilstack)))
 					goto invloop;
 				    else
@@ -2144,6 +2157,7 @@ invloop:
 				}
 				if (*pid >= SYNID_CLUSTER) {
 				    PUSH_INVLOOP(ilstack, pid);
+				    BPSLOG("%s: Looking up cluster %d\n", __func__, *pid);
 				    pid = SYN_CLSTR(syn_block)[*pid - SYNID_CLUSTER].scl_list;
 				    goto invloop;
 				} else {
@@ -2151,10 +2165,14 @@ invloop:
 				    /* TODO: Dynamically maintain singly-linked
 				     * list corresponding to the list of ids to
 				     * obviate need for repeated hash lookups. */
+				    BPSLOG("%s: Looking up group %d\n", __func__, *pid);
 				    nidxs = syn_id2idx(*pid++, &idxs);
-				    if (--nidxs < 0)
+				    BPSLOG("%s: syn_id2idx returned %d\n", __func__, nidxs);
+				    if (--nidxs < 0) {
 					/* FIXME: Internal Error! */
+					BPSLOG("%s: Internal Error: Empty idxs for pid=%d!!\n", __func__, *(pid - 1));
 					continue;
+				    }
 				    idx = *idxs++;
 				}
 			    }
@@ -2164,10 +2182,12 @@ invloop:
 				break;
 			}
 
-			//BPSLOG("%s:Got idx=%d\n", __func__, idx);
+			BPSLOG("%s: Got idx=%d\n", __func__, idx);
 			/* Use the idx obtained by either slow or fast method
 			 * to obtain the syn item to test. */
 			spp = &(SYN_ITEMS(syn_block)[idx]);
+			BPSLOG("%s: Group=%s (%d)\n", __func__,
+				syn_id2name(spp->sp_syn.id), spp->sp_syn.id);
 			if (	   spp->sp_syncing == syncing
 				&& (displaying || !(spp->sp_flags & HL_DISPLAY))
 				&& (spp->sp_type == SPTYPE_MATCH
@@ -5129,14 +5149,14 @@ syn_add_idmap(
 	BPSLOG("%s:Appending...\n", __func__);
 	/* Append to existing idx list */
 	map_entry = IDKEY2IDMAP(hi->hi_key);
-	if (ga_grow(&map_entry->idxs, 1) == OK) {
-	    BPSLOG("%s:OK\n", __func__);
-	    ((int *)map_entry->idxs.ga_data)[map_entry->idxs.ga_len] = idx;
-	    ++map_entry->idxs.ga_len;
-	    BPSLOG("%s:ga_len=%d\n", __func__, map_entry->idxs.ga_len);
-	} else {
-	    BPSLOG("%s:NOT OK!=\n", __func__);
-	}
+    }
+    if (ga_grow(&map_entry->idxs, 1) == OK) {
+	BPSLOG("%s:OK\n", __func__);
+	((int *)map_entry->idxs.ga_data)[map_entry->idxs.ga_len] = idx;
+	++map_entry->idxs.ga_len;
+	BPSLOG("%s:ga_len=%d\n", __func__, map_entry->idxs.ga_len);
+    } else {
+	BPSLOG("%s:NOT OK!=\n", __func__);
     }
     BPSLOG("%s:Added key %s\n", __func__, id_key);
 }
@@ -5217,6 +5237,10 @@ syn_cmd_match(
 	    if (syn_opt_arg.cont_in_list != NULL)
 		curwin->w_s->b_syn_containedin = TRUE;
 	    SYN_ITEMS(curwin->w_s)[idx].sp_next_list = syn_opt_arg.next_list;
+	    /* TODO: Error check? */
+	    /* Update the id->idx mapping */
+	    BPSLOG("%s: Adding mapping %d -> %d\n", __func__, syn_id, idx);
+	    syn_add_idmap(syn_id, idx);
 	    ++curwin->w_s->b_syn_patterns.ga_len;
 
 	    /* remember that we found a match for syncing on */
@@ -5472,6 +5496,7 @@ syn_cmd_region(
 							syn_opt_arg.next_list;
 		    }
 		    /* TODO: Error check? */
+		    /* Update the id->idx mapping */
 		    syn_add_idmap(syn_id, idx);
 		    ++curwin->w_s->b_syn_patterns.ga_len;
 		    ++idx;
@@ -7727,6 +7752,7 @@ do_highlight(
     /*
      * Find the group name in the table.  If it does not exist yet, add it.
      */
+    /* BPS FIXME: Check for Conceal group and figure out where to cache its id */
     id = syn_check_group(line, (int)(name_end - line));
     if (id == 0)			/* failed (out of memory) */
 	return;
