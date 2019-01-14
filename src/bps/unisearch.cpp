@@ -101,14 +101,14 @@ int main(int argc, const char *argv[])
 	// Do this once.
 	srand(time(NULL));
 
-	int len = 1, iters = 100;
+	int len = 4, iters = 100;
 	auto durs = do_all_searches(len, iters);
 	for (auto d : durs) {
 		cout << "Duration cum=" << duration_cast<microseconds>(d).count()
 			<< " avg=" << duration_cast<microseconds>(d).count() / iters
 			<< endl;
 	}
-	
+
 	return 0;
 }
 
