@@ -413,7 +413,7 @@ static int	current_state_stored = 0; /* TRUE if stored current state
 static int	current_finished = 0;	/* current line has been finished */
 static garray_T current_state		/* current stack of state_items */
 		= {0, 0, 0, 0, NULL};
-static short	*current_next_list = NULL; /* when non-zero, nextgroup list */
+static idlist_T	*current_next_list = NULL; /* when non-zero, nextgroup list */
 static int	current_next_flags = 0; /* flags for current_next_list */
 static int	current_line_id = 0;	/* unique number for current line */
 
@@ -1574,7 +1574,7 @@ store_current_state(void)
 	    bp[i].bs_extmatch = ref_extmatch(CUR_STATE(i).si_extmatch);
 	}
 	sp->sst_next_flags = current_next_flags;
-	sp->sst_next_list = current_next_list;
+	sp->sst_next_list = *current_next_list;
 	sp->sst_tick = display_tick;
 	sp->sst_change_lnum = 0;
     }
@@ -1623,7 +1623,7 @@ load_current_state(synstate_T *from)
 	}
 	current_state.ga_len = from->sst_stacksize;
     }
-    current_next_list = from->sst_next_list;
+    current_next_list = &from->sst_next_list;
     current_next_flags = from->sst_next_flags;
     current_lnum = from->sst_lnum;
 }
@@ -1641,7 +1641,7 @@ syn_stack_equal(synstate_T *sp)
 
     /* First a quick check if the stacks have the same size end nextlist. */
     if (sp->sst_stacksize == current_state.ga_len
-	    && sp->sst_next_list == current_next_list)
+	    && sp->sst_next_list.list == current_next_list->list)
     {
 	/* Need to compare all states on both stacks. */
 	if (sp->sst_stacksize > SST_FIX_STATES)
@@ -1726,7 +1726,7 @@ invalidate_current_state(void)
 {
     clear_current_state();
     current_state.ga_itemsize = 0;	/* mark current_state invalid */
-    current_next_list = NULL;
+    INIT_IDLIST(current_next_list);
     keepend_level = -1;
 }
 
@@ -2027,7 +2027,7 @@ syn_current_attr(
 	else
 	    cur_si = NULL;
 
-	if (syn_block->b_syn_containedin || cur_si == NULL
+	if (syn_block->b_syn_has_containedin || cur_si == NULL
 					      || cur_si->si_cont_list != NULL)
 	{
 	    /*
@@ -2121,106 +2121,162 @@ syn_current_attr(
 		     */
 		    next_match_idx = 0;		/* no match in this line yet */
 		    next_match_col = MAXCOL;
-		    /* Optimization: If syn_block->b_syn_containedin is FALSE
-		     * and neither current_next_list nor cur_si->si_cont_list
-		     * contain special keywords at head (e.g.,
-		     * TOP, ALL, ALLBUT...), we do NOT need to loop over all
-		     * syn patterns! */
+		    /* Optimization: If syn_block->b_syn_has_containedin is FALSE,
+		     * we do NOT need to loop over all syn patterns!
+		     * In fact, it shouldn't be necessary to loop over all
+		     * patterns even in the b_syn_has_containedin == TRUE case,
+		     * though I haven't added the code to handle that case yet.
+		     * (TODO) */
 		    /*for (idx = syn_block->b_syn_patterns.ga_len; --idx >= 0; )*/
-		    enum { SLOW, FAST, ALL, ALLBUT, TOP, CONTAINED } mode;
-		    short *pid = NULL;
-		    int *idxs = NULL, nidxs = 0;
-		    if (syn_block->b_syn_containedin)
-			mode = SLOW;
-		    else {
-			short *list = current_next_list ? current_next_list : cur_si->si_cont_list;
-			if (*list >= SYNID_ALLBUT && *list < SYNID_CLUSTER) {
-			    /* Special! */
-			    if (*list < SYNID_TOP) {
-				mode = ALLBUT;
-				excs = list;
-			    } else if (*list < SYNID_CONTAINED) {
-				mode = TOP;
-				/* TODO: Consider whether we want to ensure
-				 * there's always a NULL element terminating
-				 * each of these growarrays. */
-				excs = syn_block->b_syn_contain;
-			    } else {
-				mode = CONTAINED;
-				excs = syn_block->b_syn_contained;
-			    }
-			    pid = list + 1;
+		    enum { UNKNOWN, EXC, EXC_IND, INC } mode;
+		    short *pid = NULL;           /* INC */
+		    int *pidx = NULL;            /* EXC_IND */
+		    int len;                     /* EXC(_IND)? */
+		    int *idxs = NULL, nidxs = 0; /* INC - used with stack */
+		    idlist_T *idlist = current_next_list
+			? current_next_list
+			: !ISNULL_IDLIST(cur_si->si_cont_list)
+			    ? &cur_si->si_cont_list
+			    : NULL;
+
+		    /* Note: Any time mode is not EXC (slow) and we have a
+		     * containedin list, we'll need to transition to
+		     * containedin mode after the initial list is exhausted. */
+		    int containedin_len = syn_block->b_syn_has_containedin
+			? syn_block->b_syn_containedin.ga_len : 0;
+		    if (!current_next_list && !cur_si) {
+			/* No current group*/
+			/* TODO: Handle like TOP. Loop over notcontained.
+			 * On master, the following test guarded the iteration of current
+			 * SYN_ITEMS element: !(spp->sp_flags & HL_CONTAINED) */
+			mode = EXC_IND;
+			pidx = (short *)syn_block->b_syn_notcontained.data;
+			len = syn_block->b_syn_notcontained.ga_len;
+		    } else if (ISSPECIAL_IDLIST(*idlist)) {
+			/* Special! */
+			if (*idlist->list < SYNID_TOP) {
+			    /* FIXME: Treat ALLBUT like EXC */
+			    mode = EXC;
+			    idx = syn_block->b_syn_patterns.ga_len;
+			} else if (*idlist->list < SYNID_CONTAINED) {
+			    /* TOP */
+			    mode = EXC_IND;
+			    pidx = (short *)syn_block->b_syn_notcontained.data;
+			    len = syn_block->b_syn_notcontained.ga_len;
 			} else {
-			    /* Normal fast case */
-			    mode = FAST;
-			    pid = list;
+			    /* CONTAINED */
+			    mode = EXC_IND;
+			    pidx = (short *)syn_block->b_syn_contained.data;
+			    len = syn_block->b_syn_contained.ga_len;
+			}
+		    } else {
+			/* We have a non-special list of (include) pids. Use
+			 * special stack to process them. */
+			mode = INC;
+			pid = idlist->list;
+			idx = 0; /* prevent uninitialized warning */
+			/* Loop initialization */
+			DECL_INVLOOP_STACK(ilstack);
+		    }
+		    /* Decide whether we need to fall back to slow because of containedin */
+		    if (mode != EXC && syn_block->b_syn_has_containedin) {
+			/* TODO: Maintain growarray of containedin indices
+			 * (like contained/notcontained) and if # of
+			 * Note: If size of the 2 ga's is significantly less
+			 * than size of SYN_ITEMS, use the faster approach. */
+			if (len + syn_block->b_syn_containedin.ga_len >
+				(syn_block->b_syn_patterns.ga_len / 2))
+			{
+			    /* Fall back to slow but sure approach. */
+			    /* TODO: Consider going about it the other way -
+			     * defaulting to the slow approach and checking
+			     * before setting to one of the other modes. */
+			    mode = EXC;
+			    /* Prepare for reverse, pre-decrement iteration of SYN_ITEMS. */
+			    idx = syn_block->b_syn_patterns.ga_len;
 			}
 		    }
-		    int inv = !syn_block->b_syn_containedin &&
-			/* TODO: Need to clear inv if first element of
-			 * current_next_list or cur_si->si_cont_list is one of
-			 * the special groups (TOP,ALL,etc...) */
-			/* TODO: Add a list of all groups that can begin at
-			 * toplevel: would permit us to do inverted loop even
-			 * when current_next_list == NULL && cur_si == NULL. */
-			(current_next_list && current_next_list != ID_LIST_ALL
-			 || cur_si && cur_si->si_cont_list != ID_LIST_ALL);
 
-		    /* Loop initialization */
-		    DECL_INVLOOP_STACK(ilstack);
-		    if (inv) {
-			pid = current_next_list ? current_next_list : cur_si->si_cont_list;
-			idx = 0; /* prevent uninitialized warning */
-		    } else {
-			/* Prepare for reverse, pre-decrement iteration of SYN_ITEMS. */
-			idx = syn_block->b_syn_patterns.ga_len;
-		    }
-		    BPSLOG("%s:Before loop, curr=%s\n",
-			    __func__, cur_si ? (char *)syn_id2name(cur_si->si_id) : "");
-		    /* SYN_ITEMS loop */
+		    /* Main loop */
 		    for (;;) {
-			if (inv) {
-			    BPSLOG("%s: Just inside inv, nidxs=%d\n", __func__, nidxs);
-			    if (nidxs > 0) {
-				/* Continue processing idxs for current id */
-				--nidxs;
-				BPSLOG("%s: Grabbing next idx @ %p\n", __func__, idxs);
-				idx = *idxs++;
-			    } else {
-invloop:
-				BPSLOG("%s: pid=%p *pid=\n", __func__, pid/*, pid ? *pid : -1*/);
-				/* Grab next id if not NULL */
-				if (!*pid) {
-				    /* At end of current list */
-				    BPSLOG("%s: Popping\n", __func__);
-				    if ((pid = POP_INVLOOP(ilstack)))
-					goto invloop;
-				    else
-					break;
-				}
-				if (*pid >= SYNID_CLUSTER) {
-				    PUSH_INVLOOP(ilstack, pid);
-				    BPSLOG("%s: Looking up cluster %d\n", __func__, *pid);
-				    pid = SYN_CLSTR(syn_block)[*pid - SYNID_CLUSTER].scl_list;
-				    goto invloop;
-				} else {
-				    /* Convert non-cluster id to list of SYN_ITEMS indices */
-				    /* TODO: Dynamically maintain singly-linked
-				     * list corresponding to the list of ids to
-				     * obviate need for repeated hash lookups. */
-				    BPSLOG("%s: Looking up group %d\n", __func__, *pid);
-				    nidxs = syn_id2idx(*pid++, &idxs);
-				    BPSLOG("%s: syn_id2idx returned %d\n", __func__, nidxs);
-				    if (--nidxs < 0) {
-					/* FIXME: Internal Error! */
-					BPSLOG("%s: Internal Error: Empty idxs for pid=%d!!\n", __func__, *(pid - 1));
-					continue;
-				    }
+			switch (mode) {
+			    case EXC:
+				/* Old (slow) nested loop over *all* SYN_ITEMS */
+				/* Note: Currently, this is meant to handle ALL and ALLBUT as well. */
+				if (--idx < 0)
+				    goto main_loop_done;
+				break;
+			    case EXC_IND:
+				/* Advance to next element in b_syn_notcontained/b_syn_contained */
+				/* Note: idx references the growarray, not SYN_ITEMS */
+				if (len--)
+				    idx = *pidx++;
+				else
+				    /* Do we need to advance to containedin? */
+				    ; /* FIXME */
+				break;
+			    case INC:
+				if (nidxs > 0) {
+				    /* Continue processing idxs for current id */
+				    --nidxs;
+				    BPSLOG("%s: Grabbing next idx @ %p\n", __func__, idxs);
 				    idx = *idxs++;
+				} else {
+    invloop:
+				    BPSLOG("%s: pid=%p *pid=\n", __func__, pid/*, pid ? *pid : -1*/);
+				    /* Grab next id if not NULL */
+				    if (!*pid) {
+					/* At end of current list */
+					BPSLOG("%s: Popping\n", __func__);
+					if ((pid = POP_INVLOOP(ilstack)))
+					    goto invloop;
+					else
+					    break;
+				    }
+				    if (*pid >= SYNID_CLUSTER) {
+					PUSH_INVLOOP(ilstack, pid);
+					BPSLOG("%s: Looking up cluster %d\n", __func__, *pid);
+					pid = SYN_CLSTR(syn_block)[*pid - SYNID_CLUSTER].scl_list;
+					goto invloop;
+				    } else {
+					/* Convert non-cluster id to list of SYN_ITEMS indices */
+					/* TODO: Dynamically maintain singly-linked
+					 * list corresponding to the list of ids to
+					 * obviate need for repeated hash lookups. */
+					BPSLOG("%s: Looking up group %d\n", __func__, *pid);
+					nidxs = syn_id2idx(*pid++, &idxs);
+					BPSLOG("%s: syn_id2idx returned %d\n", __func__, nidxs);
+					if (--nidxs < 0) {
+					    /* FIXME: Internal Error! */
+					    BPSLOG("%s: Internal Error: Empty idxs for pid=%d!!\n", __func__, *(pid - 1));
+					    continue;
+					}
+					idx = *idxs++;
+				    }
 				}
-			    }
+				break;
+			}
+			goto after_containedin_test;
+containedin_test:
+			/* Do we need to transition to EXC_IND processing containedin groups? */
+			if (mode != EXC && syn_block->b_syn_containedin.ga_len) {
+			    mode = EXC_IND;
+			    pidx = (short *)syn_block->b_syn_containedin.data;
+			    len = syn_block->b_syn_containedin.ga_len;
+			}
+after_containedin_test:
+
+			if (mode == FAST) {
+			    //////////////
+			} else if (mode == TOP || mode == CONTAINED) {
+			    /* Advance to next element in b_syn_notcontained/b_syn_contained */
+			    /* Note: idx references the growarray, not SYN_ITEMS */
+			    if (--ga_idx < 0)
+				break;
+			    idx = gap[ga_idx];
 			} else {
 			    /* Old (slow) nested loop over *all* SYN_ITEMS */
+			    /* Note: Currently, this is meant to handle ALL and ALLBUT as well. */
 			    if (--idx < 0)
 				break;
 			}
@@ -2404,6 +2460,7 @@ invloop:
 			    cur_extmatch = NULL;
 			}
 		    }
+main_loop_done:
 		}
 
 		/*
@@ -2420,7 +2477,7 @@ invloop:
 			    && next_match_m_endpos.col == current_col
 			    && lspp->sp_next_list != NULL)
 		    {
-			current_next_list = lspp->sp_next_list;
+			current_next_list = &lspp->sp_next_list;
 			current_next_flags = lspp->sp_flags;
 			keep_next_list = TRUE;
 			zero_width_next_list = TRUE;
@@ -2786,7 +2843,7 @@ check_state_ends(void)
 	    {
 		/* handle next_list, unless at end of line and no "skipnl" or
 		 * "skipempty" */
-		current_next_list = cur_si->si_next_list;
+		current_next_list = &cur_si->si_next_list;
 		current_next_flags = cur_si->si_flags;
 		if (!(current_next_flags & (HL_SKIPNL | HL_SKIPEMPTY))
 			&& syn_getcurline()[current_col] == NUL)
@@ -3757,7 +3814,7 @@ syntax_clear(synblock_T *block)
 #endif
     block->b_syn_ic = FALSE;	    /* Use case, by default */
     block->b_syn_spell = SYNSPL_DEFAULT; /* default spell checking */
-    block->b_syn_containedin = FALSE;
+    block->b_syn_has_containedin = FALSE;
 #ifdef FEAT_CONCEAL
     block->b_syn_conceal = FALSE;
 #endif
@@ -4693,7 +4750,7 @@ add_keyword(
     kp->k_char = conceal_char;
     COPY_IDLIST(kp->k_syn.cont_in_list, cont_in_list);
     if (!ISNULL_IDLIST(cont_in_list))
-	curwin->w_s->b_syn_containedin = TRUE;
+	curwin->w_s->b_syn_has_containedin = TRUE;
     COPY_IDLIST(kp->next_list, next_list);
 
     if (curwin->w_s->b_syn_ic)
@@ -5281,7 +5338,7 @@ syn_cmd_match(
 	    SYN_ITEMS(curwin->w_s)[idx].sp_cchar = conceal_char;
 #endif
 	    if (syn_opt_arg.cont_in_list != NULL)
-		curwin->w_s->b_syn_containedin = TRUE;
+		curwin->w_s->b_syn_has_containedin = TRUE;
 	    SYN_ITEMS(curwin->w_s)[idx].sp_next_list = syn_opt_arg.next_list;
 	    /* TODO: Error check? */
 	    /* Update the id->idx mapping */
@@ -5537,7 +5594,7 @@ syn_cmd_region(
 			SYN_ITEMS(curwin->w_s)[idx].sp_syn.cont_in_list =
 						     syn_opt_arg.cont_in_list;
 			if (syn_opt_arg.cont_in_list != NULL)
-			    curwin->w_s->b_syn_containedin = TRUE;
+			    curwin->w_s->b_syn_has_containedin = TRUE;
 			SYN_ITEMS(curwin->w_s)[idx].sp_next_list =
 							syn_opt_arg.next_list;
 		    }
@@ -5618,8 +5675,6 @@ syn_compare_stub(const void *v1, const void *v2)
     static void
 syn_combine_list(idlist_T *clstr1_idlist, idlist_T *clstr2_idlist, int list_op)
 {
-    int		count1 = 0;
-    int		count2 = 0;
     short	*g1;
     short	*g2;
     short	*clstr = NULL;
@@ -5642,6 +5697,8 @@ syn_combine_list(idlist_T *clstr1_idlist, idlist_T *clstr2_idlist, int list_op)
 	return;
     }
 
+    /* TODO: Sorting here shouldn't be necessary now that get_id_list performs sort. */
+#if 0
     /* Assumption: clusters can't have ALL, ALLBUT, etc... */
     count1 = clstr1_idlist->ilen + clstr1_idlist->clen;
     count2 = clstr2_idlist->ilen + clstr2_idlist->clen;
@@ -5649,8 +5706,6 @@ syn_combine_list(idlist_T *clstr1_idlist, idlist_T *clstr2_idlist, int list_op)
     /*
      * For speed purposes, sort both lists.
      */
-    /* TODO: This shouldn't be necessary now that get_id_list performs sort. */
-#if 0
     qsort(*clstr1, (size_t)count1, sizeof(short), syn_compare_stub);
     qsort(*clstr2, (size_t)count2, sizeof(short), syn_compare_stub);
 #endif

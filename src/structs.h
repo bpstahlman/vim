@@ -1924,7 +1924,7 @@ typedef struct {
     garray_T    b_syn_contained;	/* idxs of contained groups */
     int		b_spell_cluster_id;	/* @Spell cluster ID or 0 */
     int		b_nospell_cluster_id;	/* @NoSpell cluster ID or 0 */
-    int		b_syn_containedin;	/* TRUE when there is an item with a
+    int		b_syn_has_containedin;	/* TRUE when there is an item with a
 					   "containedin" argument */
     int		b_syn_sync_flags;	/* flags about how to sync */
     short	b_syn_sync_id;		/* group to sync on */
