@@ -906,12 +906,20 @@ struct cleanup_stuff
 };
 
 #ifdef FEAT_SYN_HL
+/* Struct used to store sorted id lists (used for nextgroup, contains, etc.)
+ * with clear division between normal groups and clusters. */
+typedef struct idlist_S {
+    short *list;
+    int ilen;
+    int clen;
+} idlist_T;
+
 /* struct passed to in_id_list() */
 struct sp_syn
 {
     int		inc_tag;	/* ":syn include" unique tag */
     short	id;		/* highlight group ID of item */
-    short	*cont_in_list;	/* cont.in group IDs, if non-zero */
+    idlist_T	cont_in_list;	/* cont.in group IDs, if non-zero */
 };
 
 /*
@@ -923,7 +931,7 @@ struct keyentry
 {
     keyentry_T	*ke_next;	/* next entry with identical "keyword[]" */
     struct sp_syn k_syn;	/* struct passed to in_id_list() */
-    short	*next_list;	/* ID list for next match (if non-zero) */
+    idlist_T	next_list;	/* ID list for next match (if non-zero) */
     int		flags;
     int		k_char;		/* conceal substitute character */
     char_u	keyword[1];	/* actually longer */
@@ -960,7 +968,7 @@ struct syn_state
     } sst_union;
     int		sst_next_flags;	/* flags for sst_next_list */
     int		sst_stacksize;	/* number of states on the stack */
-    short	*sst_next_list;	/* "nextgroup" list in this state
+    idlist_T	sst_next_list;	/* "nextgroup" list in this state
 				 * (this is a copy, don't free it! */
     disptick_T	sst_tick;	/* tick when last displayed */
     linenr_T	sst_change_lnum;/* when non-zero, change in this line
@@ -1903,7 +1911,6 @@ typedef struct {
 # define CRYPT_M_COUNT	3 /* number of crypt methods */
 #endif
 
-
 /*
  * These are items normally related to a buffer.  But when using ":ownsyntax"
  * a window may have its own instance.
@@ -1920,8 +1927,9 @@ typedef struct {
     int		b_syn_spell;		/* SYNSPL_ values */
     garray_T	b_syn_patterns;		/* table for syntax patterns */
     garray_T	b_syn_clusters;		/* table for syntax clusters */
-    garray_T    b_syn_notcontained      /* idxs of not contained groups */
+    garray_T    b_syn_notcontained;     /* idxs of not contained groups */
     garray_T    b_syn_contained;	/* idxs of contained groups */
+    garray_T    b_syn_containedin;	/* SYN_ITEMS idxs of groups with containedin list */
     int		b_spell_cluster_id;	/* @Spell cluster ID or 0 */
     int		b_nospell_cluster_id;	/* @NoSpell cluster ID or 0 */
     int		b_syn_has_containedin;	/* TRUE when there is an item with a
