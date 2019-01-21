@@ -2156,6 +2156,8 @@ syn_current_attr(
 			    : NULL;
 		    BPSLOG("%s: cnl=%p cur_si=%p si_cont_list=%p\n", __func__,
 			    current_next_list, cur_si, cur_si ? &cur_si->si_cont_list : NULL);
+		    BPSLOG("%s: si_cont_list.list=%p\n", __func__,
+			    cur_si ? cur_si->si_cont_list.list : NULL);
 
 		    /* Note: Any time mode is not SLOW and we have a
 		     * containedin list, we'll need to transition to
@@ -2167,7 +2169,7 @@ syn_current_attr(
 			mode = IDXS;
 			pidx = (int *)syn_block->b_syn_notcontained.ga_data;
 			len = syn_block->b_syn_notcontained.ga_len;
-		    } else if (!ISALL_IDLIST(*idlist) && !ISNULL_IDLIST(*idlist)) {
+		    } else if (idlist && !ISNULL_IDLIST(*idlist) && !ISALL_IDLIST(*idlist)) {
 			BPSLOG("%s: idlist=%p\n", __func__, idlist);
 			BPSLOG("%s: idlist->list=%p\n", __func__, idlist->list);
 			if (ISSPECIAL_IDLIST(*idlist)) {
@@ -2218,6 +2220,7 @@ syn_current_attr(
 
 		    /* Main loop */
 		    for (;;) {
+loopstart:
 			switch (mode) {
 			    case SLOW:
 				/* Old (slow) nested loop over *all* SYN_ITEMS */
@@ -2230,11 +2233,14 @@ syn_current_attr(
 				 * containing all SYN_ITEMS indices of a
 				 * particular class: e.g., contained,
 				 * notcontained, containedin. */
+				/* FIXME: break vs main_loop_done!!!!! */
 				if (len--)
 				    idx = *pidx++;
 				else if (mode != CTDIN)
 				    /* Primary list exhausted */
 				    goto containedin_test;
+				else
+				    goto main_loop_done;
 				break;
 			    case IDS:
 				if (nidxs > 0) {
@@ -2282,12 +2288,13 @@ containedin_test:
 			    mode = CTDIN;
 			    pidx = (int *)syn_block->b_syn_containedin.ga_data;
 			    len = syn_block->b_syn_containedin.ga_len;
+			    goto loopstart;
 			} else
 			    /* Done */
 			    break;
 skip_containedin_test:
 
-			BPSLOG("%s: idx=%d\n", __func__, idx);
+			BPSLOG("%s: idx=%d mode=%d\n", __func__, idx, mode);
 			/* Use the idx obtained by either slow or fast method
 			 * to obtain the syn item to test. */
 			spp = &(SYN_ITEMS(syn_block)[idx]);
