@@ -21,7 +21,7 @@ typedef unsigned short	short_u;
 #endif
 
 #include <stdarg.h>
-#undef CFG_BPSLOG
+#define CFG_BPSLOG
 #ifdef CFG_BPSLOG
 static inline int BPSLOG(const char *fmt, ...)
 {

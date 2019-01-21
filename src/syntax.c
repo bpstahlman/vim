@@ -32,13 +32,14 @@ typedef struct invloop_stack_S {
     (LIST).ilen = (LIST).clen = 0; }
 #define FREE_IDLIST(LIST) { \
     vim_free((LIST).list); \
+    (LIST).list = NULL; \
     (LIST).ilen = (LIST).clen = 0; }
 #define COPY_IDLIST(DST, SRC) { \
     (DST).list = copy_id_list((SRC).list); \
     (DST).ilen = (SRC).ilen; \
     (DST).clen = (SRC).clen; }
 #define ISNULL_IDLIST(LIST) \
-    !(LIST).list
+    (!(LIST).list)
 #define SETALL_IDLIST(LIST) { \
     (LIST).list = ID_LIST_ALL; \
     (LIST).ilen = (LIST).clen = 0; }
@@ -363,7 +364,7 @@ typedef struct
     int		keyword;	/* TRUE for ":syn keyword" */
     int		*sync_idx;	/* syntax item for "grouphere" argument, NULL
 				   if not allowed */
-    /* FIXME: Is this necessary now that cont_list recordsl len? */
+    /* FIXME: Is this necessary now that cont_list records len? */
     char	has_cont_list;	/* TRUE if "cont_list" can be used */
     idlist_T	cont_list;	/* group IDs for "contains" argument */
     idlist_T	cont_in_list;	/* group IDs for "containedin" argument */
@@ -1573,7 +1574,9 @@ store_current_state(void)
 	    bp[i].bs_extmatch = ref_extmatch(CUR_STATE(i).si_extmatch);
 	}
 	sp->sst_next_flags = current_next_flags;
-	sp->sst_next_list = *current_next_list;
+	sp->sst_next_list = current_next_list
+	    ? *current_next_list
+	    : (idlist_T){0, 0, 0};
 	sp->sst_tick = display_tick;
 	sp->sst_change_lnum = 0;
     }
@@ -2124,12 +2127,14 @@ syn_current_attr(
 
 		    /* Default to original (slow) mode */
 		    enum { SLOW, IDXS, IDS, CTDIN } mode = SLOW;
-		    /* TODO: Consider creating a anon union to contain the variables for the various modes. */
+		    /* TODO: Consider creating anon union to hold the variables for the various modes. */
 		    /* SLOW: Original (slow) approach, uses idx in reverse loop over SYN_ITEMS. */
 		    idx = syn_block->b_syn_patterns.ga_len;
 		    /* IDS: Iterate a NULL-terminated list containing
-		     * (non-special) id's, each of which is looked up in a hash
-		     * to obtain a list of SYN_ITEMS idx's. */
+		     * (non-special) id's representing normal syntax items and
+		     * clusters, each of which is looked up in a hash (or
+		     * iterated recursively) to obtain a list of SYN_ITEMS
+		     * idx's. */
 		    short *pid = NULL;
 		    int *idxs = NULL, nidxs = 0;
 		    /* Stack init */
@@ -2146,9 +2151,11 @@ syn_current_attr(
 		    /* cache current_next_list or cur_si->si_cont_list (or NULL) */
 		    idlist_T *idlist = current_next_list
 			? current_next_list
-			: !ISNULL_IDLIST(cur_si->si_cont_list)
+			: cur_si && !ISNULL_IDLIST(cur_si->si_cont_list)
 			    ? &cur_si->si_cont_list
 			    : NULL;
+		    BPSLOG("%s: cnl=%p cur_si=%p si_cont_list=%p\n", __func__,
+			    current_next_list, cur_si, cur_si ? &cur_si->si_cont_list : NULL);
 
 		    /* Note: Any time mode is not SLOW and we have a
 		     * containedin list, we'll need to transition to
@@ -2160,29 +2167,33 @@ syn_current_attr(
 			mode = IDXS;
 			pidx = (int *)syn_block->b_syn_notcontained.ga_data;
 			len = syn_block->b_syn_notcontained.ga_len;
-		    } else if (ISSPECIAL_IDLIST(*idlist)) {
-			/* Special!
-			 * Note: Keep default SLOW mode for ALLBUT. */
-			if (*idlist->list >= SYNID_TOP) {
-			    mode = IDXS;
-			    if (*idlist->list < SYNID_CONTAINED) {
-				/* TOP */
-				pidx = (int *)syn_block->b_syn_notcontained.ga_data;
-				len = syn_block->b_syn_notcontained.ga_len;
-			    } else {
-				/* CONTAINED */
-				pidx = (int *)syn_block->b_syn_contained.ga_data;
-				len = syn_block->b_syn_contained.ga_len;
+		    } else if (!ISALL_IDLIST(*idlist) && !ISNULL_IDLIST(*idlist)) {
+			BPSLOG("%s: idlist=%p\n", __func__, idlist);
+			BPSLOG("%s: idlist->list=%p\n", __func__, idlist->list);
+			if (ISSPECIAL_IDLIST(*idlist)) {
+			    /* Special!
+			     * Note: Keep default SLOW mode for ALLBUT. */
+			    if (*idlist->list >= SYNID_TOP) {
+				mode = IDXS;
+				if (*idlist->list < SYNID_CONTAINED) {
+				    /* TOP */
+				    pidx = (int *)syn_block->b_syn_notcontained.ga_data;
+				    len = syn_block->b_syn_notcontained.ga_len;
+				} else {
+				    /* CONTAINED */
+				    pidx = (int *)syn_block->b_syn_contained.ga_data;
+				    len = syn_block->b_syn_contained.ga_len;
+				}
 			    }
+			} else {
+			    /* We have a non-special list of (include) id's
+			     * representing both normal groups and clusters. Each
+			     * normal id may correspond to multiple SYN_ITEMS. A
+			     * special stack is used to process the clusters
+			     * recursively. */
+			    mode = IDS;
+			    pid = idlist->list;
 			}
-		    } else {
-			/* We have a non-special list of (include) id's
-			 * representing both normal groups and clusters. Each
-			 * normal id may correspond to multiple SYN_ITEMS. A
-			 * special stack is used to process the clusters
-			 * recursively. */
-			mode = IDS;
-			pid = idlist->list;
 		    }
 		    /* Decide whether to fall back to original (slow) approach
 		     * in certain containedin scenarios.
@@ -2486,8 +2497,13 @@ main_loop_done:
 			}
 			next_match_idx = -1;
 		    }
-		    else
+		    else {
 			cur_si = push_next_match(cur_si);
+			/* TEMP DEBUG */
+			BPSLOG("%s: 2 cur_si=%p si_cont_list=%p si_cont_list->list=%p\n", __func__,
+				cur_si, cur_si ? &cur_si->si_cont_list : NULL,
+				cur_si ? cur_si->si_cont_list.list : NULL);
+		    }
 		    found_match = TRUE;
 		}
 	    }
@@ -5006,6 +5022,7 @@ syn_incl_toplevel(int id, int *flagsp)
 	{
 	    grp_list[0] = id;
 	    grp_list[1] = 0;
+	    BPSLOG("%s: grp_list[0]=%d\n", __func__, id);
 	    syn_combine_list(&SYN_CLSTR(curwin->w_s)[tlg_id].scl_list,
 		    /* BPS TODO: Make sure this instantiation is ok, and be
 		     * sure the input id can be guaranteed to be non-cluster.
@@ -5125,6 +5142,7 @@ syn_cmd_keyword(exarg_T *eap, int syncing UNUSED)
 	    syn_opt_arg.keyword = TRUE;
 	    syn_opt_arg.sync_idx = NULL;
 	    syn_opt_arg.has_cont_list = FALSE;
+	    INIT_IDLIST(syn_opt_arg.cont_list)
 	    INIT_IDLIST(syn_opt_arg.cont_in_list)
 	    INIT_IDLIST(syn_opt_arg.next_list)
 
@@ -5623,6 +5641,11 @@ syn_cmd_region(
 			/* Update the special, denormalized growarrays used to optimize the
 			 * main loop in syn_current_attr */
 			add_syn_item_to_specials(idx, &syn_opt_arg);
+		    } else {
+			/* BPS TEMP DEBUG */
+			SYN_ITEMS(curwin->w_s)[idx].sp_cont_list = (idlist_T){0xdeadbee1, 0, 0};
+			SYN_ITEMS(curwin->w_s)[idx].sp_syn.cont_in_list = (idlist_T){0xdeadbee2, 0, 0};
+			SYN_ITEMS(curwin->w_s)[idx].sp_next_list = (idlist_T){0xdeadbee3, 0, 0};
 		    }
 
 		    
@@ -5784,15 +5807,15 @@ syn_combine_list(idlist_T *clstr1_idlist, idlist_T *clstr2_idlist, int list_op)
 	 */
 	/* TODO: Streamline the counter updates, perhaps with pointer that's changed only once. */
 	for (; *g1; g1++) {
-	    if (*g1 >= SYNID_CLUSTER) ccount++; else icount++;
 	    if (round == 2)
 		clstr[icount + ccount] = *g1;
+	    if (*g1 >= SYNID_CLUSTER) ccount++; else icount++;
 	}
 	if (list_op == CLUSTER_ADD)
 	    for (; *g2; g2++) {
-		if (*g2 >= SYNID_CLUSTER) ccount++; else icount++;
 		if (round == 2)
 		    clstr[icount + ccount] = *g2;
+		if (*g2 >= SYNID_CLUSTER) ccount++; else icount++;
 	    }
 
 	if (round == 1)
@@ -6027,6 +6050,12 @@ init_syn_patterns(void)
 {
     curwin->w_s->b_syn_patterns.ga_itemsize = sizeof(synpat_T);
     curwin->w_s->b_syn_patterns.ga_growsize = 10;
+    curwin->w_s->b_syn_contained.ga_itemsize = sizeof(int);
+    curwin->w_s->b_syn_contained.ga_growsize = 10;
+    curwin->w_s->b_syn_notcontained.ga_itemsize = sizeof(int);
+    curwin->w_s->b_syn_notcontained.ga_growsize = 10;
+    curwin->w_s->b_syn_containedin.ga_itemsize = sizeof(int);
+    curwin->w_s->b_syn_containedin.ga_growsize = 10;
 }
 
 /*
@@ -6623,6 +6652,7 @@ in_id_list(
      * contains list.  We also require that "id" is at the same ":syn include"
      * level as the list.
      */
+    BPSLOG("%s: pids=%p\n", __func__, pids);
     item = *pids;
     if (item >= SYNID_ALLBUT && item < SYNID_CLUSTER)
     {
@@ -6668,7 +6698,7 @@ in_id_list(
 
     /* Now check the clusters... */
     /* Note: idlist->ilen excludes any special token at head */
-    for (pids += idlist->ilen; *pids; item = *pids++) {
+    for (pids += idlist->ilen; item = *pids++; ) {
 	/* FIXME: The "item == id" test occurs even for clusters on master.
 	 * Should it? Is there any way "id" could be a cluster? If not, remove
 	 * the test. */

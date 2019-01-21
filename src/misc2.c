@@ -943,6 +943,8 @@ lalloc(long_u size, int message)
     /* Safety check for allocating zero bytes */
     if (size == 0)
     {
+	volatile int i = *(volatile int *)(0);
+foo:
 	/* Don't hide this message */
 	emsg_silent = 0;
 	IEMSGN(_("E341: Internal error: lalloc(%ld, )"), size);
