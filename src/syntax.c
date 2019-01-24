@@ -2154,10 +2154,6 @@ syn_current_attr(
 			: cur_si && !ISNULL_IDLIST(cur_si->si_cont_list)
 			    ? &cur_si->si_cont_list
 			    : NULL;
-		    BPSLOG("%s: cnl=%p cur_si=%p si_cont_list=%p\n", __func__,
-			    current_next_list, cur_si, cur_si ? &cur_si->si_cont_list : NULL);
-		    BPSLOG("%s: si_cont_list.list=%p\n", __func__,
-			    cur_si ? cur_si->si_cont_list.list : NULL);
 
 		    /* Note: Any time mode is not SLOW and we have a
 		     * containedin list, we'll need to transition to
@@ -2260,6 +2256,8 @@ invloop:
 				    }
 				    if (*pid >= SYNID_CLUSTER) {
 					PUSH_INVLOOP(ilstack, pid);
+					BPSLOG("%s: Starting cluster name=%s\n", __func__,
+						SYN_CLSTR(syn_block)[*pid - SYNID_CLUSTER].scl_name);
 					pid = SYN_CLSTR(syn_block)[*pid - SYNID_CLUSTER].scl_list.list;
 					goto invloop;
 				    } else {
@@ -2267,7 +2265,9 @@ invloop:
 					/* TODO: Dynamically maintain singly-linked
 					 * list corresponding to the list of ids to
 					 * obviate need for repeated hash lookups. */
+					BPSLOG("%s: Processing syntax group %s\n", __func__, syn_id2name(*pid));
 					nidxs = syn_id2idx(*pid++, &idxs);
+					BPSLOG("%s: nidxs=%d\n", __func__, nidxs);
 					if (--nidxs < 0) {
 					    /* FIXME: Internal Error! */
 					    BPSLOG("%s: Internal Error: Empty idxs for pid=%d!!\n", __func__, *(pid - 1));
@@ -2294,11 +2294,16 @@ containedin_test:
 			    break;
 skip_containedin_test:
 
+			/* FIXME!!! si_cont_list.list is FF's ID_ALL in many cases? Should it be? */
+			BPSLOG("%s: cnl=%p cur_si=%p si_cont_list=%p\n", __func__,
+				current_next_list, cur_si, cur_si ? &cur_si->si_cont_list : NULL);
+			BPSLOG("%s: si_cont_list.list=%p\n", __func__,
+				cur_si ? cur_si->si_cont_list.list : NULL);
 			BPSLOG("%s: idx=%d mode=%d\n", __func__, idx, mode);
 			/* Use the idx obtained by either slow or fast method
 			 * to obtain the syn item to test. */
 			spp = &(SYN_ITEMS(syn_block)[idx]);
-			BPSLOG("%s: Group=%s (%d)\n", __func__,
+			BPSLOG("%s: Testing item %s (%d)\n", __func__,
 				syn_id2name(spp->sp_syn.id), spp->sp_syn.id);
 			if (	   spp->sp_syncing == syncing
 				&& (displaying || !(spp->sp_flags & HL_DISPLAY))
@@ -2485,10 +2490,13 @@ main_loop_done:
 		    /* When a zero-width item matched which has a nextgroup,
 		     * don't push the item but set nextgroup. */
 		    lspp = &(SYN_ITEMS(syn_block)[next_match_idx]);
+		    BPSLOG("%s: Matched %s at cur col\n", __func__,
+			    syn_id2name(lspp->sp_syn.id));
 		    if (next_match_m_endpos.lnum == current_lnum
 			    && next_match_m_endpos.col == current_col
 			    && !ISNULL_IDLIST(lspp->sp_next_list))
 		    {
+			BPSLOG("%s: Using zw item's nextgroup\n", __func__);
 			current_next_list = &lspp->sp_next_list;
 			current_next_flags = lspp->sp_flags;
 			keep_next_list = TRUE;
@@ -2505,11 +2513,8 @@ main_loop_done:
 			next_match_idx = -1;
 		    }
 		    else {
+			BPSLOG("%s: Pushing\n", __func__);
 			cur_si = push_next_match(cur_si);
-			/* TEMP DEBUG */
-			BPSLOG("%s: 2 cur_si=%p si_cont_list=%p si_cont_list->list=%p\n", __func__,
-				cur_si, cur_si ? &cur_si->si_cont_list : NULL,
-				cur_si ? cur_si->si_cont_list.list : NULL);
 		    }
 		    found_match = TRUE;
 		}
@@ -5648,17 +5653,18 @@ syn_cmd_region(
 			/* Update the special, denormalized growarrays used to optimize the
 			 * main loop in syn_current_attr */
 			add_syn_item_to_specials(idx, &syn_opt_arg);
+			/* TODO: Error check? */
+			/* TODO: Do we want only the START's here? I think so. */
+			/* Update the id->idx mapping */
+			syn_add_idmap(syn_id, idx);
 		    } else {
 			/* BPS TEMP DEBUG */
-			SYN_ITEMS(curwin->w_s)[idx].sp_cont_list = (idlist_T){0xdeadbee1, 0, 0};
-			SYN_ITEMS(curwin->w_s)[idx].sp_syn.cont_in_list = (idlist_T){0xdeadbee2, 0, 0};
-			SYN_ITEMS(curwin->w_s)[idx].sp_next_list = (idlist_T){0xdeadbee3, 0, 0};
+			INIT_IDLIST(SYN_ITEMS(curwin->w_s)[idx].sp_cont_list);
+			INIT_IDLIST(SYN_ITEMS(curwin->w_s)[idx].sp_syn.cont_in_list);
+			INIT_IDLIST(SYN_ITEMS(curwin->w_s)[idx].sp_next_list);
 		    }
 
 		    
-		    /* TODO: Error check? */
-		    /* Update the id->idx mapping */
-		    syn_add_idmap(syn_id, idx);
 		    ++curwin->w_s->b_syn_patterns.ga_len;
 		    ++idx;
 #ifdef FEAT_FOLDING
