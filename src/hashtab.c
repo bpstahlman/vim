@@ -141,8 +141,6 @@ hash_lookup(hashtab_T *ht, char_u *key, hash_T hash)
      */
     idx = (unsigned)(hash & ht->ht_mask);
     hi = &ht->ht_array[idx];
-    BPSLOG("%s (%p): hash=%lu, idx=%d, key=%s mask=%lu\n",
-	    __func__, ht, hash, idx, key, ht->ht_mask);
 
     if (hi->hi_key == NULL)
 	return hi;
@@ -153,7 +151,6 @@ hash_lookup(hashtab_T *ht, char_u *key, hash_T hash)
     else
 	freeitem = NULL;
 
-    BPSLOG("%s (%p): Initial miss!\n", __func__, ht);
 
     /*
      * Need to search through the table to find the key.  The algorithm
@@ -172,8 +169,6 @@ hash_lookup(hashtab_T *ht, char_u *key, hash_T hash)
 #endif
 	idx = (unsigned)((idx << 2U) + idx + perturb + 1U);
 	hi = &ht->ht_array[idx & ht->ht_mask];
-	BPSLOG("%s (%p): perturb=%lu idx=%u midx=%d freeitem_key=%s key=%s\n",
-		__func__, ht, perturb, idx, idx & ht->ht_mask, freeitem ? freeitem->hi_key : NULL, hi->hi_key);
 	if (hi->hi_key == NULL)
 	    return freeitem == NULL ? hi : freeitem;
 	if (hi->hi_hash == hash
@@ -246,7 +241,6 @@ hash_add_item(
     hi->hi_key = key;
     hi->hi_hash = hash;
 
-    BPSLOG("%s (%p): Calling hash_may_resize locked=%d.\n", __func__, ht, ht->ht_locked);
     /* When the space gets low may resize the array. */
     return hash_may_resize(ht, 0);
 }
@@ -342,16 +336,13 @@ hash_may_resize(
     if (ht->ht_locked > 0)
 	return OK;
 
-    BPSLOG("%s (%p): used=%d filled=%d\n", __func__, ht, ht->ht_used, ht->ht_filled);
 #define HT_DEBUG
 #ifdef HT_DEBUG
     if (ht->ht_used > ht->ht_filled) {
 	EMSG("hash_may_resize(): more used than filled");
-	BPSLOG("%s (%p): Table More Used Than Filled!\n", __func__, ht);
     }
     if (ht->ht_filled >= ht->ht_mask + 1) {
 	EMSG("hash_may_resize(): table completely filled");
-	BPSLOG("%s (%p): Table Filled!\n", __func__, ht);
     }
 #endif
 
@@ -386,7 +377,6 @@ hash_may_resize(
 	minsize = minitems * 3 / 2;	/* array is up to 2/3 full */
     }
 
-    BPSLOG("%s (%p): minsize=%d\n", __func__, ht, minsize);
     newsize = HT_INIT_SIZE;
     while (newsize < minsize)
     {
@@ -394,7 +384,6 @@ hash_may_resize(
 	if (newsize == 0)
 	    return FAIL;	/* overflow */
     }
-    BPSLOG("%s (%p): newsize=%d\n", __func__, ht, newsize);
 
     if (newsize == HT_INIT_SIZE)
     {

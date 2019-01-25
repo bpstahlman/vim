@@ -29,9 +29,11 @@ static inline int BPSLOG(const char *fmt, ...)
     if (!fp) {
 	fp = fopen("bps-vim.log", "a");
     }
+#if 0 /* timestamps aren't currently useful, and they complicate diffs */
     struct timeval tm;
     gettimeofday(&tm, NULL);
     fprintf(fp, "%010ld.%03ld: ", tm.tv_sec, tm.tv_usec / 1000L);
+#endif
     va_list args;
     va_start(args, fmt);
     vfprintf(fp, fmt, args);

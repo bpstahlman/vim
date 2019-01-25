@@ -2166,8 +2166,10 @@ syn_current_attr(
 			pidx = (int *)syn_block->b_syn_notcontained.ga_data;
 			len = syn_block->b_syn_notcontained.ga_len;
 		    } else if (idlist && !ISNULL_IDLIST(*idlist) && !ISALL_IDLIST(*idlist)) {
+#if 0
 			BPSLOG("%s: idlist=%p\n", __func__, idlist);
 			BPSLOG("%s: idlist->list=%p\n", __func__, idlist->list);
+#endif
 			if (ISSPECIAL_IDLIST(*idlist)) {
 			    /* Special!
 			     * Note: Keep default SLOW mode for ALLBUT. */
@@ -2256,7 +2258,7 @@ invloop:
 				    }
 				    if (*pid >= SYNID_CLUSTER) {
 					PUSH_INVLOOP(ilstack, pid);
-					BPSLOG("%s: Starting cluster name=%s\n", __func__,
+					BPSLOG("%s: invloop-only: Starting cluster name=%s\n", __func__,
 						SYN_CLSTR(syn_block)[*pid - SYNID_CLUSTER].scl_name);
 					pid = SYN_CLSTR(syn_block)[*pid - SYNID_CLUSTER].scl_list.list;
 					goto invloop;
@@ -2265,9 +2267,9 @@ invloop:
 					/* TODO: Dynamically maintain singly-linked
 					 * list corresponding to the list of ids to
 					 * obviate need for repeated hash lookups. */
-					BPSLOG("%s: Processing syntax group %s\n", __func__, syn_id2name(*pid));
+					BPSLOG("%s: invloop-only: Processing syntax group %s\n", __func__, syn_id2name(*pid));
 					nidxs = syn_id2idx(*pid++, &idxs);
-					BPSLOG("%s: nidxs=%d\n", __func__, nidxs);
+					BPSLOG("%s: invloop-only: nidxs=%d\n", __func__, nidxs);
 					if (--nidxs < 0) {
 					    /* FIXME: Internal Error! */
 					    BPSLOG("%s: Internal Error: Empty idxs for pid=%d!!\n", __func__, *(pid - 1));
@@ -2295,14 +2297,17 @@ containedin_test:
 skip_containedin_test:
 
 			/* FIXME!!! si_cont_list.list is FF's ID_ALL in many cases? Should it be? */
+#if 0
 			BPSLOG("%s: cnl=%p cur_si=%p si_cont_list=%p\n", __func__,
 				current_next_list, cur_si, cur_si ? &cur_si->si_cont_list : NULL);
 			BPSLOG("%s: si_cont_list.list=%p\n", __func__,
 				cur_si ? cur_si->si_cont_list.list : NULL);
 			BPSLOG("%s: idx=%d mode=%d\n", __func__, idx, mode);
+#endif
 			/* Use the idx obtained by either slow or fast method
 			 * to obtain the syn item to test. */
 			spp = &(SYN_ITEMS(syn_block)[idx]);
+			/* ADDME! Testing item */
 			BPSLOG("%s: Testing item %s (%d)\n", __func__,
 				syn_id2name(spp->sp_syn.id), spp->sp_syn.id);
 			if (	   spp->sp_syncing == syncing
@@ -2321,6 +2326,8 @@ skip_containedin_test:
 						    &cur_si->si_cont_list, &spp->sp_syn,
 						    spp->sp_flags & HL_CONTAINED))))) {
 			    int r;
+			    /* ADDME! */
+			    BPSLOG("%s: Test passed!\n", __func__);
 
 			    /* If we already tried matching in this line, and
 			     * there isn't a match before next_match_col, skip
@@ -2361,6 +2368,8 @@ skip_containedin_test:
 				continue;
 			    }
 			    startcol = pos.col;
+			    /* ADDME! Found match */
+			    BPSLOG("%s: Regex matched at line=%d col=%d!\n", __func__, pos.lnum, pos.col);
 
 			    /* remember the next column where this pattern
 			     * matches in the current line */
@@ -2490,13 +2499,15 @@ main_loop_done:
 		    /* When a zero-width item matched which has a nextgroup,
 		     * don't push the item but set nextgroup. */
 		    lspp = &(SYN_ITEMS(syn_block)[next_match_idx]);
-		    BPSLOG("%s: Matched %s at cur col\n", __func__,
+		    /* ADDME! Matched at cur col */
+		    BPSLOG("%s: Using match %s at cur col\n", __func__,
 			    syn_id2name(lspp->sp_syn.id));
 		    if (next_match_m_endpos.lnum == current_lnum
 			    && next_match_m_endpos.col == current_col
 			    && !ISNULL_IDLIST(lspp->sp_next_list))
 		    {
-			BPSLOG("%s: Using zw item's nextgroup\n", __func__);
+			/* ADDME! Using zw item's nextgroup */
+			BPSLOG("%s: Using zero-width item's nextgroup\n", __func__);
 			current_next_list = &lspp->sp_next_list;
 			current_next_flags = lspp->sp_flags;
 			keep_next_list = TRUE;
@@ -2513,8 +2524,10 @@ main_loop_done:
 			next_match_idx = -1;
 		    }
 		    else {
-			BPSLOG("%s: Pushing\n", __func__);
+			/* ADDME! Pushing next match */
 			cur_si = push_next_match(cur_si);
+			BPSLOG("%s: Pushed match for group %s onto stack\n", __func__,
+			    syn_id2name(SYN_ITEMS(syn_block)[cur_si->si_idx].sp_syn.id));
 		    }
 		    found_match = TRUE;
 		}
@@ -2549,6 +2562,8 @@ main_loop_done:
 	     * When did set current_next_list for a zero-width item and no
 	     * match was found don't loop (would get stuck).
 	     */
+	    /* ADDME! Using nextgroup match and continuing to look for contained matches */
+	    BPSLOG("%s: Using nextgroup match!\n", __func__);
 	    current_next_list = NULL;
 	    next_match_idx = -1;
 	    if (!zero_width_next_list)
@@ -2764,6 +2779,9 @@ push_next_match(stateitem_T *cur_si)
 	}
 	else
 	{
+	    /* ADDME! Setting end of non-region match */
+	    BPSLOG("%s: Found end of non-region match for %s\n", __func__,
+		    syn_id2name(SYN_ITEMS(syn_block)[cur_si->si_idx].sp_syn.id));
 	    cur_si->si_m_endpos = next_match_m_endpos;
 	    cur_si->si_h_endpos = next_match_h_endpos;
 	    cur_si->si_ends = TRUE;
@@ -2875,6 +2893,9 @@ check_state_ends(void)
 		 * "keepend" now needs to check for its end. */
 		 had_extend = (cur_si->si_flags & HL_EXTEND);
 
+		/* ADDME! Popping current state */
+		BPSLOG("%s: Popping current state %s\n", __func__,
+			syn_id2name(SYN_ITEMS(syn_block)[cur_si->si_idx].sp_syn.id));
 		pop_current_state();
 
 		if (current_state.ga_len == 0)
@@ -2887,7 +2908,10 @@ check_state_ends(void)
 			break;
 		}
 
+		/* ADDME! New current state is... */
 		cur_si = &CUR_STATE(current_state.ga_len - 1);
+		BPSLOG("%s: New current state is %s\n", __func__,
+			syn_id2name(SYN_ITEMS(syn_block)[cur_si->si_idx].sp_syn.id));
 
 		/*
 		 * Only for a region the search for the end continues after
@@ -3089,6 +3113,9 @@ update_si_end(
     }
     else
     {
+	/* ADDME! Found region end */
+	BPSLOG("%s: Found end match for %s\n", __func__,
+		syn_id2name(SYN_ITEMS(syn_block)[sip->si_idx].sp_syn.id));
 	/* match within this line */
 	sip->si_m_endpos = endpos;
 	sip->si_h_endpos = hl_endpos;
@@ -4038,6 +4065,7 @@ syn_cmd_clear(exarg_T *eap, int syncing)
 		     */
 		    short scl_id = id - SYNID_CLUSTER;
 
+		    /* TODO: Perhaps make a VIM_CLEAR for idlist. */
 		    INIT_IDLIST(SYN_CLSTR(curwin->w_s)[scl_id].scl_list)
 		}
 	    }
@@ -5034,7 +5062,8 @@ syn_incl_toplevel(int id, int *flagsp)
 	{
 	    grp_list[0] = id;
 	    grp_list[1] = 0;
-	    BPSLOG("%s: grp_list[0]=%d\n", __func__, id);
+	    /*BPSLOG("%s: grp_list[0]=%d\n", __func__, id);*/
+	    /* FIXME: Make sure this is appropriate. */
 	    syn_combine_list(&SYN_CLSTR(curwin->w_s)[tlg_id].scl_list,
 		    /* BPS TODO: Make sure this instantiation is ok, and be
 		     * sure the input id can be guaranteed to be non-cluster.
@@ -5154,6 +5183,8 @@ syn_cmd_keyword(exarg_T *eap, int syncing UNUSED)
 	    syn_opt_arg.keyword = TRUE;
 	    syn_opt_arg.sync_idx = NULL;
 	    syn_opt_arg.has_cont_list = FALSE;
+	    /* FIXME: Why no such initialization in master? Ah, because, as
+	     * indicated by has_cont_list, keywords can't have a cont_list */
 	    INIT_IDLIST(syn_opt_arg.cont_list)
 	    INIT_IDLIST(syn_opt_arg.cont_in_list)
 	    INIT_IDLIST(syn_opt_arg.next_list)
@@ -5658,7 +5689,7 @@ syn_cmd_region(
 			/* Update the id->idx mapping */
 			syn_add_idmap(syn_id, idx);
 		    } else {
-			/* BPS TEMP DEBUG */
+			/* BPS FIXME: The else apparently isn't needed. */
 			INIT_IDLIST(SYN_ITEMS(curwin->w_s)[idx].sp_cont_list);
 			INIT_IDLIST(SYN_ITEMS(curwin->w_s)[idx].sp_syn.cont_in_list);
 			INIT_IDLIST(SYN_ITEMS(curwin->w_s)[idx].sp_next_list);
@@ -6665,7 +6696,6 @@ in_id_list(
      * contains list.  We also require that "id" is at the same ":syn include"
      * level as the list.
      */
-    BPSLOG("%s: pids=%p\n", __func__, pids);
     item = *pids;
     if (item >= SYNID_ALLBUT && item < SYNID_CLUSTER)
     {
