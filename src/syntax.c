@@ -2126,7 +2126,7 @@ syn_current_attr(
 		    next_match_col = MAXCOL;
 
 		    /* Default to original (slow) mode */
-		    enum { SLOW, IDXS, IDS, CTDIN } mode = SLOW;
+		    enum { SLOW, IDS, TOPS, IDXS, CTDIN } mode = SLOW;
 		    /* TODO: Consider creating anon union to hold the variables for the various modes. */
 		    /* SLOW: Original (slow) approach, uses idx in reverse loop over SYN_ITEMS. */
 		    idx = syn_block->b_syn_patterns.ga_len;
@@ -2158,14 +2158,7 @@ syn_current_attr(
 		    /* Note: Any time mode is not SLOW and we have a
 		     * containedin list, we'll need to transition to
 		     * containedin mode after the initial list is exhausted. */
-		    if (!cur_si) {
-			/* No current group. Handle like TOP. Loop over notcontained.
-			 * On master, the following test guarded the iteration of current
-			 * SYN_ITEMS element: !(spp->sp_flags & HL_CONTAINED) */
-			mode = IDXS;
-			pidx = (int *)syn_block->b_syn_notcontained.ga_data;
-			len = syn_block->b_syn_notcontained.ga_len;
-		    } else if (idlist && !ISNULL_IDLIST(*idlist) && !ISALL_IDLIST(*idlist)) {
+		    if (idlist && !ISNULL_IDLIST(*idlist) && !ISALL_IDLIST(*idlist)) {
 #if 0
 			BPSLOG("%s: idlist=%p\n", __func__, idlist);
 			BPSLOG("%s: idlist->list=%p\n", __func__, idlist->list);
@@ -2194,6 +2187,13 @@ syn_current_attr(
 			    mode = IDS;
 			    pid = idlist->list;
 			}
+		    } else if (!cur_si) {
+			/* No current group. Handle like TOP. Loop over notcontained.
+			 * On master, the following test guarded the iteration of current
+			 * SYN_ITEMS element: !(spp->sp_flags & HL_CONTAINED) */
+			mode = TOPS;
+			pidx = (int *)syn_block->b_syn_notcontained.ga_data;
+			len = syn_block->b_syn_notcontained.ga_len;
 		    }
 		    /* Decide whether to fall back to original (slow) approach
 		     * in certain containedin scenarios.
@@ -2226,6 +2226,7 @@ loopstart:
 				    goto main_loop_done;
 				break;
 			    case IDXS:
+			    case TOPS:
 			    case CTDIN:
 				/* Advance to next element in growarray
 				 * containing all SYN_ITEMS indices of a
@@ -2284,9 +2285,14 @@ invloop:
 containedin_test:
 			/* We get here only by direct jump when a primary list
 			 * is exhausted. See whether we need to transition to
-			 * IDXS mode to process containedin groups.
+			 * IDXS mode to process toplevel groups or CTDIN mode
+			 * to process containedin groups.
 			 * Note: If no current group, containedin is irrelevant. */
-			if (cur_si && syn_block->b_syn_containedin.ga_len) {
+			if (!cur_si && (mode == IDS || mode == IDXS)) {
+			    mode = TOPS;
+			    pidx = (int *)syn_block->b_syn_notcontained.ga_data;
+			    len = syn_block->b_syn_notcontained.ga_len;
+			} else if (cur_si && mode != CTDIN && syn_block->b_syn_containedin.ga_len) {
 			    mode = CTDIN;
 			    pidx = (int *)syn_block->b_syn_containedin.ga_data;
 			    len = syn_block->b_syn_containedin.ga_len;
@@ -2376,10 +2382,13 @@ skip_containedin_test:
 			    spp->sp_startcol = startcol;
 
 			    /*
-			     * If a previously found match starts at a lower
-			     * column number, don't use this one.
+			     * If a previously found match starts at lower
+			     * column number *or* starts at same column number
+			     * but has higher idx, don't use this one.
+			     * Note: Necessary if we can't guaranteed idx's always iterated in reverse order.
 			     */
-			    if (startcol >= next_match_col)
+			    //if (startcol >= next_match_col)
+			    if (startcol > next_match_col || (next_match_col == startcol && next_match_idx >= idx))
 				continue;
 
 			    /*
