@@ -27,22 +27,23 @@ typedef struct invloop_stack_S {
 #define POP_INVLOOP(stk) \
     (stk.len > 0 ? stk.els[--stk.len] : (short *)NULL)
 
-#define INIT_IDLIST(LIST) { \
+/* Macros for working with idlist_T */
+#define INIT_IDLIST(LIST) do { \
     (LIST).list = NULL; \
-    (LIST).ilen = (LIST).clen = 0; }
-#define FREE_IDLIST(LIST) { \
+    (LIST).ilen = (LIST).clen = 0; } while (0)
+#define FREE_IDLIST(LIST) do { \
     vim_free((LIST).list); \
     (LIST).list = NULL; \
-    (LIST).ilen = (LIST).clen = 0; }
-#define COPY_IDLIST(DST, SRC) { \
+    (LIST).ilen = (LIST).clen = 0; } while (0)
+#define COPY_IDLIST(DST, SRC) do { \
     (DST).list = copy_id_list((SRC).list); \
     (DST).ilen = (SRC).ilen; \
-    (DST).clen = (SRC).clen; }
+    (DST).clen = (SRC).clen; } while (0)
 #define ISNULL_IDLIST(LIST) \
     (!(LIST).list)
-#define SETALL_IDLIST(LIST) { \
+#define SETALL_IDLIST(LIST) do { \
     (LIST).list = ID_LIST_ALL; \
-    (LIST).ilen = (LIST).clen = 0; }
+    (LIST).ilen = (LIST).clen = 0; } while (0)
 #define ISALL_IDLIST(LIST) \
     ((LIST).list == ID_LIST_ALL)
 /* TODO: Consider obviating need for this by storing any special value separately from the list */
@@ -1620,7 +1621,7 @@ load_current_state(synstate_T *from)
 		CUR_STATE(i).si_next_list =
 		     (SYN_ITEMS(syn_block)[CUR_STATE(i).si_idx]).sp_next_list;
 	    else
-		INIT_IDLIST(CUR_STATE(i).si_next_list)
+		INIT_IDLIST(CUR_STATE(i).si_next_list);
 	    update_si_attr(i);
 	}
 	current_state.ga_len = from->sst_stacksize;
@@ -2094,7 +2095,7 @@ syn_current_attr(
 			}
 			else
 			    cur_si->si_attr = syn_id2attr(syn_id);
-			INIT_IDLIST(cur_si->si_cont_list)
+			INIT_IDLIST(cur_si->si_cont_list);
 			cur_si->si_next_list = *next_list;
 			check_keepend();
 		    }
@@ -2159,10 +2160,6 @@ syn_current_attr(
 		     * containedin list, we'll need to transition to
 		     * containedin mode after the initial list is exhausted. */
 		    if (idlist && !ISNULL_IDLIST(*idlist) && !ISALL_IDLIST(*idlist)) {
-#if 0
-			BPSLOG("%s: idlist=%p\n", __func__, idlist);
-			BPSLOG("%s: idlist->list=%p\n", __func__, idlist->list);
-#endif
 			if (ISSPECIAL_IDLIST(*idlist)) {
 			    /* Special!
 			     * Note: Keep default SLOW mode for ALLBUT. */
@@ -2302,14 +2299,6 @@ containedin_test:
 			    break;
 skip_containedin_test:
 
-			/* FIXME!!! si_cont_list.list is FF's ID_ALL in many cases? Should it be? */
-#if 0
-			BPSLOG("%s: cnl=%p cur_si=%p si_cont_list=%p\n", __func__,
-				current_next_list, cur_si, cur_si ? &cur_si->si_cont_list : NULL);
-			BPSLOG("%s: si_cont_list.list=%p\n", __func__,
-				cur_si ? cur_si->si_cont_list.list : NULL);
-			BPSLOG("%s: idx=%d mode=%d\n", __func__, idx, mode);
-#endif
 			/* Use the idx obtained by either slow or fast method
 			 * to obtain the syn item to test. */
 			spp = &(SYN_ITEMS(syn_block)[idx]);
@@ -2336,9 +2325,10 @@ skip_containedin_test:
 			    BPSLOG("%s: Test passed!\n", __func__);
 
 			    /* If we already tried matching in this line, and
-			     * the match we found is at least as good as this
-			     * one (occurs before this one, or occurs in same
-			     * column, but has higher index) skip this item. */
+			     * the previously match is at least as good as this
+			     * one (i.e., occurs before this one, or occurs in
+			     * same column, but has higher index), skip this
+			     * item. */
 			    if (spp->sp_line_id == current_line_id
 				    && (spp->sp_startcol > next_match_col ||
 				       (next_match_col == spp->sp_startcol && next_match_idx >= idx)))
@@ -2384,13 +2374,12 @@ skip_containedin_test:
 			    spp->sp_startcol = startcol;
 
 			    /*
-			     * If a previously found match starts at lower
+			     * If a previously found match starts at a lower
 			     * column number *or* starts at same column number
-			     * but has higher idx, don't use this one.
-			     * Note: Necessary if we can't guaranteed idx's always iterated in reverse order.
+			     * but has higher idx, skip this one.
 			     */
-			    //if (startcol >= next_match_col)
-			    if (startcol > next_match_col || (next_match_col == startcol && next_match_idx >= idx))
+			    if (startcol > next_match_col ||
+				    (next_match_col == startcol && next_match_idx >= idx))
 				continue;
 
 			    /*
@@ -2647,7 +2636,7 @@ main_loop_done:
 		{
 		    sps.inc_tag = 0;
 		    sps.id = syn_block->b_nospell_cluster_id;
-		    INIT_IDLIST(sps.cont_in_list)
+		    INIT_IDLIST(sps.cont_in_list);
 		    *can_spell = !in_id_list(sip, &sip->si_cont_list, &sps, 0);
 		}
 	    }
@@ -2663,7 +2652,7 @@ main_loop_done:
 		{
 		    sps.inc_tag = 0;
 		    sps.id = syn_block->b_spell_cluster_id;
-		    INIT_IDLIST(sps.cont_in_list)
+		    INIT_IDLIST(sps.cont_in_list);
 		    *can_spell = in_id_list(sip, &sip->si_cont_list, &sps, 0);
 
 		    if (syn_block->b_nospell_cluster_id != 0)
@@ -2831,7 +2820,7 @@ push_next_match(stateitem_T *cur_si)
 	    if (cur_si->si_flags & HL_CONCEALENDS)
 		cur_si->si_flags |= HL_CONCEAL;
 #endif
-	    INIT_IDLIST(cur_si->si_next_list)
+	    INIT_IDLIST(cur_si->si_next_list);
 	    check_keepend();
 	    update_si_attr(current_state.ga_len - 1);
 	}
@@ -2974,7 +2963,7 @@ update_si_attr(int idx)
     sip->si_attr = syn_id2attr(sip->si_id);
     sip->si_trans_id = sip->si_id;
     if (sip->si_flags & HL_MATCH)
-	INIT_IDLIST(sip->si_cont_list)
+	INIT_IDLIST(sip->si_cont_list);
     else
 	sip->si_cont_list = spp->sp_cont_list;
 
@@ -2991,7 +2980,7 @@ update_si_attr(int idx)
 	    sip->si_attr = 0;
 	    sip->si_trans_id = 0;
 	    if (ISNULL_IDLIST(sip->si_cont_list))
-		SETALL_IDLIST(sip->si_cont_list)
+		SETALL_IDLIST(sip->si_cont_list);
 	}
 	else
 	{
@@ -3996,9 +3985,9 @@ syn_clear_pattern(synblock_T *block, int i)
     /* Only free sp_cont_list and sp_next_list of first start pattern */
     if (i == 0 || SYN_ITEMS(block)[i - 1].sp_type != SPTYPE_START)
     {
-	FREE_IDLIST(SYN_ITEMS(block)[i].sp_cont_list)
-	FREE_IDLIST(SYN_ITEMS(block)[i].sp_next_list)
-	FREE_IDLIST(SYN_ITEMS(block)[i].sp_syn.cont_in_list)
+	FREE_IDLIST(SYN_ITEMS(block)[i].sp_cont_list);
+	FREE_IDLIST(SYN_ITEMS(block)[i].sp_next_list);
+	FREE_IDLIST(SYN_ITEMS(block)[i].sp_syn.cont_in_list);
     }
 }
 
@@ -4010,7 +3999,7 @@ syn_clear_cluster(synblock_T *block, int i)
 {
     vim_free(SYN_CLSTR(block)[i].scl_name);
     vim_free(SYN_CLSTR(block)[i].scl_name_u);
-    FREE_IDLIST(SYN_CLSTR(block)[i].scl_list)
+    FREE_IDLIST(SYN_CLSTR(block)[i].scl_list);
 }
 
 /*
@@ -4077,7 +4066,7 @@ syn_cmd_clear(exarg_T *eap, int syncing)
 		    short scl_id = id - SYNID_CLUSTER;
 
 		    /* TODO: Perhaps make a VIM_CLEAR for idlist. */
-		    INIT_IDLIST(SYN_CLSTR(curwin->w_s)[scl_id].scl_list)
+		    INIT_IDLIST(SYN_CLSTR(curwin->w_s)[scl_id].scl_list);
 		}
 	    }
 	    else
@@ -4731,8 +4720,8 @@ syn_clear_keyword(int id, hashtab_T *ht)
 		    }
 		    else
 			kp_prev->ke_next = kp_next;
-		    FREE_IDLIST(kp->next_list)
-		    FREE_IDLIST(kp->k_syn.cont_in_list)
+		    FREE_IDLIST(kp->next_list);
+		    FREE_IDLIST(kp->k_syn.cont_in_list);
 		    vim_free(kp);
 		    kp = kp_next;
 		}
@@ -4767,8 +4756,8 @@ clear_keywtab(hashtab_T *ht)
 	    for (kp = HI2KE(hi); kp != NULL; kp = kp_next)
 	    {
 		kp_next = kp->ke_next;
-		FREE_IDLIST(kp->next_list)
-		FREE_IDLIST(kp->k_syn.cont_in_list)
+		FREE_IDLIST(kp->next_list);
+		FREE_IDLIST(kp->k_syn.cont_in_list);
 		vim_free(kp);
 	    }
 	}
@@ -4809,10 +4798,10 @@ add_keyword(
     kp->k_syn.inc_tag = current_syn_inc_tag;
     kp->flags = flags;
     kp->k_char = conceal_char;
-    COPY_IDLIST(kp->k_syn.cont_in_list, *cont_in_list)
+    COPY_IDLIST(kp->k_syn.cont_in_list, *cont_in_list);
     if (!ISNULL_IDLIST(*cont_in_list))
 	curwin->w_s->b_syn_has_containedin = TRUE;
-    COPY_IDLIST(kp->next_list, *next_list)
+    COPY_IDLIST(kp->next_list, *next_list);
 
     if (curwin->w_s->b_syn_ic)
 	ht = &curwin->w_s->b_keywtab_ic;
@@ -5196,9 +5185,9 @@ syn_cmd_keyword(exarg_T *eap, int syncing UNUSED)
 	    syn_opt_arg.has_cont_list = FALSE;
 	    /* FIXME: Why no such initialization in master? Ah, because, as
 	     * indicated by has_cont_list, keywords can't have a cont_list */
-	    INIT_IDLIST(syn_opt_arg.cont_list)
-	    INIT_IDLIST(syn_opt_arg.cont_in_list)
-	    INIT_IDLIST(syn_opt_arg.next_list)
+	    INIT_IDLIST(syn_opt_arg.cont_list);
+	    INIT_IDLIST(syn_opt_arg.cont_in_list);
+	    INIT_IDLIST(syn_opt_arg.next_list);
 
 	    /*
 	     * The options given apply to ALL keywords, so all options must be
@@ -5278,8 +5267,8 @@ syn_cmd_keyword(exarg_T *eap, int syncing UNUSED)
 	    }
 error:
 	    vim_free(keyword_copy);
-	    FREE_IDLIST(syn_opt_arg.cont_in_list)
-	    FREE_IDLIST(syn_opt_arg.next_list)
+	    FREE_IDLIST(syn_opt_arg.cont_in_list);
+	    FREE_IDLIST(syn_opt_arg.next_list);
 	}
     }
 
@@ -5381,9 +5370,9 @@ syn_cmd_match(
     syn_opt_arg.keyword = FALSE;
     syn_opt_arg.sync_idx = syncing ? &sync_idx : NULL;
     syn_opt_arg.has_cont_list = TRUE;
-    INIT_IDLIST(syn_opt_arg.cont_list)
-    INIT_IDLIST(syn_opt_arg.cont_in_list)
-    INIT_IDLIST(syn_opt_arg.next_list)
+    INIT_IDLIST(syn_opt_arg.cont_list);
+    INIT_IDLIST(syn_opt_arg.cont_in_list);
+    INIT_IDLIST(syn_opt_arg.next_list);
     rest = get_syn_options(rest, &syn_opt_arg, &conceal_char, eap->skip);
 
     /* get the pattern. */
@@ -5459,9 +5448,9 @@ syn_cmd_match(
      */
     vim_regfree(item.sp_prog);
     vim_free(item.sp_pattern);
-    FREE_IDLIST(syn_opt_arg.cont_list)
-    FREE_IDLIST(syn_opt_arg.cont_in_list)
-    FREE_IDLIST(syn_opt_arg.next_list)
+    FREE_IDLIST(syn_opt_arg.cont_list);
+    FREE_IDLIST(syn_opt_arg.cont_in_list);
+    FREE_IDLIST(syn_opt_arg.next_list);
 
     if (rest == NULL)
 	EMSG2(_(e_invarg2), arg);
@@ -5519,9 +5508,9 @@ syn_cmd_region(
     syn_opt_arg.keyword = FALSE;
     syn_opt_arg.sync_idx = NULL;
     syn_opt_arg.has_cont_list = TRUE;
-    INIT_IDLIST(syn_opt_arg.cont_list)
-    INIT_IDLIST(syn_opt_arg.cont_in_list)
-    INIT_IDLIST(syn_opt_arg.next_list)
+    INIT_IDLIST(syn_opt_arg.cont_list);
+    INIT_IDLIST(syn_opt_arg.cont_in_list);
+    INIT_IDLIST(syn_opt_arg.next_list);
 
     /*
      * get the options, patterns and matchgroup.
@@ -5740,9 +5729,9 @@ syn_cmd_region(
 
     if (!success)
     {
-	FREE_IDLIST(syn_opt_arg.cont_list)
-	FREE_IDLIST(syn_opt_arg.cont_in_list)
-	FREE_IDLIST(syn_opt_arg.next_list)
+	FREE_IDLIST(syn_opt_arg.cont_list);
+	FREE_IDLIST(syn_opt_arg.cont_in_list);
+	FREE_IDLIST(syn_opt_arg.next_list);
 	if (not_enough)
 	    EMSG2(_("E399: Not enough arguments: syntax region %s"), arg);
 	else if (illegal || rest == NULL)
@@ -5787,11 +5776,11 @@ syn_combine_list(idlist_T *clstr1_idlist, idlist_T *clstr2_idlist, int list_op)
     if (ISNULL_IDLIST(*clstr1_idlist) || list_op == CLUSTER_REPLACE)
     {
 	if (list_op == CLUSTER_REPLACE)
-	    FREE_IDLIST(*clstr1_idlist)
+	    FREE_IDLIST(*clstr1_idlist);
 	if (list_op == CLUSTER_REPLACE || list_op == CLUSTER_ADD)
 	    *clstr1_idlist = *clstr2_idlist;
 	else
-	    FREE_IDLIST(*clstr2_idlist)
+	    FREE_IDLIST(*clstr2_idlist);
 	return;
     }
 
@@ -5894,8 +5883,8 @@ syn_combine_list(idlist_T *clstr1_idlist, idlist_T *clstr2_idlist, int list_op)
     /*
      * Finally, put the new list in place.
      */
-    FREE_IDLIST(*clstr1_idlist)
-    FREE_IDLIST(*clstr2_idlist)
+    FREE_IDLIST(*clstr1_idlist);
+    FREE_IDLIST(*clstr2_idlist);
     clstr1_idlist->list = clstr;
     clstr1_idlist->ilen = icount;
     clstr1_idlist->clen = ccount;
@@ -6004,7 +5993,7 @@ syn_add_cluster(char_u *name)
     vim_memset(&(SYN_CLSTR(curwin->w_s)[len]), 0, sizeof(syn_cluster_T));
     SYN_CLSTR(curwin->w_s)[len].scl_name = name;
     SYN_CLSTR(curwin->w_s)[len].scl_name_u = vim_strsave_up(name);
-    INIT_IDLIST(SYN_CLSTR(curwin->w_s)[len].scl_list)
+    INIT_IDLIST(SYN_CLSTR(curwin->w_s)[len].scl_list);
     ++curwin->w_s->b_syn_clusters.ga_len;
 
     if (STRICMP(name, "Spell") == 0)
@@ -6069,7 +6058,7 @@ syn_cmd_cluster(exarg_T *eap, int syncing UNUSED)
 
 	    /* Note: Use idlist_T structure since get_id_list() requires it,
 	     * but for now, cluster id lists are still stored in raw form. */
-	    INIT_IDLIST(clstr_list)
+	    INIT_IDLIST(clstr_list);
 	    if (get_id_list(&rest, opt_len, &clstr_list, eap->skip) == FAIL)
 	    {
 		EMSG2(_(e_invarg2), rest);
@@ -6080,7 +6069,7 @@ syn_cmd_cluster(exarg_T *eap, int syncing UNUSED)
 		syn_combine_list(&SYN_CLSTR(curwin->w_s)[scl_id].scl_list,
 			     &clstr_list, list_op);
 	    else
-		FREE_IDLIST(clstr_list)
+		FREE_IDLIST(clstr_list);
 	    got_clstr = TRUE;
 	}
 
