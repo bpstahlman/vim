@@ -2336,10 +2336,12 @@ skip_containedin_test:
 			    BPSLOG("%s: Test passed!\n", __func__);
 
 			    /* If we already tried matching in this line, and
-			     * there isn't a match before next_match_col, skip
-			     * this item. */
+			     * the match we found is at least as good as this
+			     * one (occurs before this one, or occurs in same
+			     * column, but has higher index) skip this item. */
 			    if (spp->sp_line_id == current_line_id
-				    && spp->sp_startcol >= next_match_col)
+				    && (spp->sp_startcol > next_match_col ||
+				       (next_match_col == spp->sp_startcol && next_match_idx >= idx)))
 				continue;
 			    spp->sp_line_id = current_line_id;
 
