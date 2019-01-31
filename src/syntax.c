@@ -21,11 +21,13 @@ typedef struct invloop_stack_S {
 /* Inverted loop stack framework */
 #define DECL_INVLOOP_STACK(stk) \
     invloop_stack_T stk = {{0}, 0}
+#define INIT_INVLOOP_STACK(stk) \
+    do { (stk).len = 0; (stk).els[0] = 0; } while (0)
 #define IS_EMPTY_INVLOOP_STACK(stk) ((stk).len <= 0)
 #define PUSH_INVLOOP(stk, pid) \
-    stk.els[stk.len++] = pid + 1;
+    (stk).els[(stk).len++] = pid + 1;
 #define POP_INVLOOP(stk) \
-    (stk.len > 0 ? stk.els[--stk.len] : (short *)NULL)
+    ((stk).len > 0 ? (stk).els[--(stk).len] : (short *)NULL)
 
 /* Macros for working with idlist_T */
 #define INIT_IDLIST(LIST) do { \
@@ -1916,6 +1918,174 @@ syn_id2idx(
     }
 }
 
+typedef enum loopmode_E {
+    SLOW, IDS, IDXS, CTDIN
+} loopmode_T;
+
+typedef struct loopstate_S {
+    loopmode_T mode;
+    union {
+	/* SLOW */
+	int idx;
+	/* IDS */
+	struct {
+	    short *pid;
+	    int *idxs, nidxs;
+	    invloop_stack_T stk;
+	};
+	/* IDXS */
+	struct {
+	    int *pidx;
+	    int len;
+	};
+    };
+} loopstate_T;
+
+    static void
+syn_current_attr_loop_init(
+	loopstate_T *lst,
+	idlist_T *current_next_list,
+	stateitem_T *cur_si)
+{
+    idlist_T *idlist = current_next_list ? current_next_list : cur_si
+	? &cur_si->si_cont_list
+	: NULL;
+
+    /* Default to original (slow) mode.
+     * Rationale: The conditionals below are exhaustive, but just to be safe... */
+    lst->mode = SLOW;
+    lst->idx = syn_block->b_syn_patterns.ga_len;
+
+    if (idlist) {
+	/* FIXME!!!!: Need to consider ID_LIST_ALL */
+	if (ISSPECIAL_IDLIST(*idlist)) {
+	    short special = *idlist->list;
+	    if (special < SYNID_TOP) { /* ALLBUT */
+		lst->mode = SLOW;
+		lst->idx = syn_block->b_syn_patterns.ga_len;
+	    } else {
+		/* Note: If there's NO nextlist, but there IS a current group,
+		 * fall back to CTDIN upon exhaustion. */
+		lst->mode = IDXS;
+		if (special < SYNID_CONTAINED) { /* TOP */
+		    lst->pidx = (int *)syn_block->b_syn_notcontained.ga_data;
+		    lst->len = syn_block->b_syn_notcontained.ga_len;
+		} else { /* CONTAINED */
+		    lst->pidx = (int *)syn_block->b_syn_contained.ga_data;
+		    lst->len = syn_block->b_syn_contained.ga_len;
+		}
+	    }
+	} else {
+	    /* Non-special include list */
+	    lst->mode = IDS;
+	    lst->pid = idlist->list;
+	    lst->nidxs = 0;
+	    lst->idxs = NULL;
+	    INIT_INVLOOP_STACK(lst->stk);
+	}
+    } else {
+	/* Neither nextgroup nor current group
+	 * Process notcontained garray
+	 * Note: No fallback upon exhaustion */
+	lst->mode = IDXS;
+	lst->pidx = (int *)syn_block->b_syn_notcontained.ga_data;
+	lst->len = syn_block->b_syn_notcontained.ga_len;
+    }
+    /* Decide whether to fall back to original (slow) approach in certain
+     * containedin scenarios.
+     * Rationale: Because an IDS include list can contain clusters, there's no
+     * good way to estimate its total size. For now, I'll just assume it's
+     * always best to use IDS mode, falling back to containedin if necessary
+     * once the include list is exhausted. But for IDXS mode, fall back to slow
+     * method if the expected savings of IDXS+CTDIN modes is not significant.
+     * */
+    if (lst->mode == IDXS && cur_si && syn_block->b_syn_has_containedin &&
+	lst->len + syn_block->b_syn_containedin.ga_len >
+	syn_block->b_syn_patterns.ga_len / 2) {
+	    /* Fall back to slow but sure approach. */
+	    lst->mode = SLOW;
+	    lst->idx = syn_block->b_syn_patterns.ga_len;
+    }
+}
+
+/* Note: This function is called only from syn_current_attr. It has been
+ * factored out of syn_current_attr into an inline function to increase clarity
+ * without sacrificing performance. */
+    static inline int
+syn_current_attr_loop_iter(
+	loopstate_T *lst,
+	idlist_T *current_next_list,
+	stateitem_T *cur_si)
+{
+start:
+    /* Logic to obtain next SYN_ITEMS idx depends on mode. */
+    switch (lst->mode) {
+	case SLOW:
+	    /* Old (slow) nested loop over *all* SYN_ITEMS */
+	    if (--lst->idx < 0)
+		return -1;
+	    break;
+	case IDXS:
+	case CTDIN:
+	    /* Advance to next element in growarray containing all SYN_ITEMS
+	     * indices of a particular class: e.g., contained, notcontained,
+	     * containedin. */
+	    if (lst->len--)
+		return *lst->pidx++;
+	    /* Current sequence exhausted */
+	    break;
+	case IDS:
+	    if (lst->nidxs > 0) {
+		/* Continue processing idxs for current id */
+		--lst->nidxs;
+		return *lst->idxs++;
+	    } else {
+		/* No more idxs for current id */
+		for (;;) {
+		    /* Grab next id if not NULL. Pop stack */
+		    if (!*lst->pid) {
+			/* At end of current list */
+			if ((lst->pid = POP_INVLOOP(lst->stk)))
+			    /* Resume popped list */
+			    continue;
+		    } else if (*lst->pid >= SYNID_CLUSTER) {
+			PUSH_INVLOOP(lst->stk, lst->pid);
+			lst->pid = SYN_CLSTR(syn_block)[*lst->pid - SYNID_CLUSTER].scl_list.list;
+			/* Start on new cluster */
+			continue;
+		    } else {
+			/* Convert non-cluster id to list of SYN_ITEMS indices */
+			/* TODO: Is there a way to avoid the hash lookups? */
+			lst->nidxs = syn_id2idx(*lst->pid++, &lst->idxs);
+			if (--lst->nidxs < 0)
+			    /* FIXME: Internal Error! */
+			    return -1;
+			return *lst->idxs++;
+		    }
+		    /* Sequence exhausted */
+		    break;
+		}
+	    }
+	    break;
+    }
+    /* We get here only when our primary sequence is exhausted. See whether we
+     * need to transition to CTDIN mode to process containedin groups.
+     * Note: If current_next_list is non-NULL, we're not interested in anything
+     * but nextgroup. If no current group, items with containedin lists are
+     * irrelevant. */
+    if (!current_next_list && cur_si && lst->mode != CTDIN &&
+	    syn_block->b_syn_containedin.ga_len)
+    {
+	lst->mode = CTDIN;
+	lst->pidx = (int *)syn_block->b_syn_containedin.ga_data;
+	lst->len = syn_block->b_syn_containedin.ga_len;
+	/* Restart the function. */
+	goto start;
+    }
+    /* Didn't find anything. */
+    return -1;
+}
+
 /*
  * Get syntax attributes for current_lnum, current_col.
  */
@@ -2126,179 +2296,26 @@ syn_current_attr(
 		    next_match_idx = 0;		/* no match in this line yet */
 		    next_match_col = MAXCOL;
 
-		    /* Default to original (slow) mode */
-		    enum { SLOW, IDS, TOPS, IDXS, CTDIN } mode = SLOW;
-		    /* TODO: Consider creating anon union to hold the variables for the various modes. */
-		    /* SLOW: Original (slow) approach, uses idx in reverse loop over SYN_ITEMS. */
-		    idx = syn_block->b_syn_patterns.ga_len;
-		    /* IDS: Iterate a NULL-terminated list containing
-		     * (non-special) id's representing normal syntax items and
-		     * clusters, each of which is looked up in a hash (or
-		     * iterated recursively) to obtain a list of SYN_ITEMS
-		     * idx's. */
-		    short *pid = NULL;
-		    int *idxs = NULL, nidxs = 0;
-		    /* Stack init */
-		    DECL_INVLOOP_STACK(ilstack);
-		    /* IDXS: Similar to SLOW (slow original approach), but the
-		     * list we traverse contains a subset of all indices into
-		     * SYN_ITEMS.
-		     * CTDIN: Processed like IDXS but for containedin subset.
-		     * We can advance to it after exhausting all items in IDS
-		     * or IDXS mode. */
-		    int *pidx = NULL;
-		    int len = 0; /* avoid unininitialized warning */
-
-		    /* cache current_next_list or cur_si->si_cont_list (or NULL) */
-		    idlist_T *idlist = current_next_list
-			? current_next_list
-			: cur_si && !ISNULL_IDLIST(cur_si->si_cont_list)
-			    ? &cur_si->si_cont_list
-			    : NULL;
-
-		    /* Note: Any time mode is not SLOW and we have a
-		     * containedin list, we'll need to transition to
-		     * containedin mode after the initial list is exhausted. */
-		    if (idlist && !ISNULL_IDLIST(*idlist) && !ISALL_IDLIST(*idlist)) {
-			if (ISSPECIAL_IDLIST(*idlist)) {
-			    /* Special!
-			     * Note: Keep default SLOW mode for ALLBUT. */
-			    if (*idlist->list >= SYNID_TOP) {
-				mode = IDXS;
-				if (*idlist->list < SYNID_CONTAINED) {
-				    /* TOP */
-				    pidx = (int *)syn_block->b_syn_notcontained.ga_data;
-				    len = syn_block->b_syn_notcontained.ga_len;
-				} else {
-				    /* CONTAINED */
-				    pidx = (int *)syn_block->b_syn_contained.ga_data;
-				    len = syn_block->b_syn_contained.ga_len;
-				}
-			    }
-			} else {
-			    /* We have a non-special list of (include) id's
-			     * representing both normal groups and clusters. Each
-			     * normal id may correspond to multiple SYN_ITEMS. A
-			     * special stack is used to process the clusters
-			     * recursively. */
-			    mode = IDS;
-			    pid = idlist->list;
-			}
-		    } else if (!cur_si) {
-			/* No current group. Handle like TOP. Loop over notcontained.
-			 * On master, the following test guarded the iteration of current
-			 * SYN_ITEMS element: !(spp->sp_flags & HL_CONTAINED) */
-			mode = TOPS;
-			pidx = (int *)syn_block->b_syn_notcontained.ga_data;
-			len = syn_block->b_syn_notcontained.ga_len;
-		    }
-		    /* Decide whether to fall back to original (slow) approach
-		     * in certain containedin scenarios.
-		     * Design Decision Needed: Because an IDS include list can
-		     * contain clusters, there's no good way to estimate its
-		     * total size. For now, I'll just assume it's always best
-		     * to use IDS mode, falling back to containedin if
-		     * necessary once the include list is exhausted. But for
-		     * IDXS mode, fall back to slow method if the expected
-		     * savings of IDXS+CTDIN modes is not significant. */
-		    if (mode == IDXS && cur_si && syn_block->b_syn_has_containedin &&
-			/* Note: If combined size of the 2 lists is
-			 * significantly less than size of SYN_ITEMS, use the
-			 * faster approach.
-			 * TODO: Would be better to use *union* of 2 lists, but
-			 * calculating that will require more infrastructure */
-			len + syn_block->b_syn_containedin.ga_len >
-			(syn_block->b_syn_patterns.ga_len / 2))
-			    /* Fall back to slow but sure approach.
-			     * Assumption: default value of idx is still correct. */
-			    mode = SLOW;
+		    loopstate_T lst;
+		    BPSLOG("%s: Before syn_current_attr_loop_init idx=%d\n", __func__, idx);
+		    syn_current_attr_loop_init(&lst, current_next_list, cur_si);
+		    BPSLOG("%s: After syn_current_attr_loop_init idx=%d\n", __func__, idx);
 
 		    /* Main loop */
 		    for (;;) {
-loopstart:
-			switch (mode) {
-			    case SLOW:
-				/* Old (slow) nested loop over *all* SYN_ITEMS */
-				if (--idx < 0)
-				    goto main_loop_done;
-				break;
-			    case IDXS:
-			    case TOPS:
-			    case CTDIN:
-				/* Advance to next element in growarray
-				 * containing all SYN_ITEMS indices of a
-				 * particular class: e.g., contained,
-				 * notcontained, containedin. */
-				/* FIXME: break vs main_loop_done!!!!! */
-				if (len--)
-				    idx = *pidx++;
-				else if (mode != CTDIN)
-				    /* Primary list exhausted */
-				    goto containedin_test;
-				else
-				    goto main_loop_done;
-				break;
-			    case IDS:
-				if (nidxs > 0) {
-				    /* Continue processing idxs for current id */
-				    --nidxs;
-				    idx = *idxs++;
-				} else {
-invloop:
-				    /* Grab next id if not NULL */
-				    if (!*pid) {
-					/* At end of current list */
-					if ((pid = POP_INVLOOP(ilstack)))
-					    goto invloop;
-					else
-					    /* Primary list exhausted */
-					    goto containedin_test;
-				    }
-				    if (*pid >= SYNID_CLUSTER) {
-					PUSH_INVLOOP(ilstack, pid);
-					BPSLOG("%s: invloop-only: Starting cluster name=%s\n", __func__,
-						SYN_CLSTR(syn_block)[*pid - SYNID_CLUSTER].scl_name);
-					pid = SYN_CLSTR(syn_block)[*pid - SYNID_CLUSTER].scl_list.list;
-					goto invloop;
-				    } else {
-					/* Convert non-cluster id to list of SYN_ITEMS indices */
-					/* TODO: Dynamically maintain singly-linked
-					 * list corresponding to the list of ids to
-					 * obviate need for repeated hash lookups. */
-					BPSLOG("%s: invloop-only: Processing syntax group %s\n", __func__, syn_id2name(*pid));
-					nidxs = syn_id2idx(*pid++, &idxs);
-					BPSLOG("%s: invloop-only: nidxs=%d\n", __func__, nidxs);
-					if (--nidxs < 0) {
-					    /* FIXME: Internal Error! */
-					    BPSLOG("%s: Internal Error: Empty idxs for pid=%d!!\n", __func__, *(pid - 1));
-					    continue;
-					}
-					idx = *idxs++;
-				    }
-				}
-				break;
-			}
-			goto skip_containedin_test;
-containedin_test:
-			/* We get here only by direct jump when a primary list
-			 * is exhausted. See whether we need to transition to
-			 * IDXS mode to process toplevel groups or CTDIN mode
-			 * to process containedin groups.
-			 * Note: If no current group, containedin is irrelevant. */
-			if (!cur_si && (mode == IDS || mode == IDXS)) {
-			    mode = TOPS;
-			    pidx = (int *)syn_block->b_syn_notcontained.ga_data;
-			    len = syn_block->b_syn_notcontained.ga_len;
-			} else if (cur_si && mode != CTDIN && syn_block->b_syn_containedin.ga_len) {
-			    mode = CTDIN;
-			    pidx = (int *)syn_block->b_syn_containedin.ga_data;
-			    len = syn_block->b_syn_containedin.ga_len;
-			    goto loopstart;
-			} else
-			    /* Done */
-			    break;
-skip_containedin_test:
 
+			/* Get next idx (-1 if no more) using inline function. */
+			BPSLOG("%s: Before idx=%d mode=%d pidx=%p len=%d\n", __func__,
+				idx, lst.mode, lst.pidx, lst.len);
+			if ((idx = syn_current_attr_loop_iter(
+				&lst, current_next_list, cur_si)) < 0) {
+			    BPSLOG("%s: After idx=%d mode=%d pidx=%p len=%d\n", __func__,
+				idx, lst.mode, lst.pidx, lst.len);
+			    break;
+			}
+
+			BPSLOG("%s: After idx=%d mode=%d pidx=%p len=%d\n", __func__,
+				idx, lst.mode, lst.pidx, lst.len);
 			/* Use the idx obtained by either slow or fast method
 			 * to obtain the syn item to test. */
 			spp = &(SYN_ITEMS(syn_block)[idx]);
@@ -2311,7 +2328,7 @@ skip_containedin_test:
 				    || spp->sp_type == SPTYPE_START)
 				/* Note: The costly in_id_list calls can be
 				 * skipped if we're in IDS mode. */
-				&& (mode == IDS
+				&& (lst.mode == IDS
 				    || (current_next_list != NULL
 					? in_id_list(NULL, current_next_list,
 					    &spp->sp_syn, 0)
