@@ -1958,7 +1958,15 @@ syn_current_attr_loop_init(
 
     if (idlist) {
 	/* FIXME!!!!: Need to consider ID_LIST_ALL */
-	if (ISSPECIAL_IDLIST(*idlist)) {
+	if (idlist->list == ID_LIST_ALL) {
+	    /* TODO: Is this validation necessary? */
+	    if (!current_next_list && cur_si) {
+		/* Current state is transparent toplevel item. */
+		lst->mode = IDXS;
+		lst->pidx = (int *)syn_block->b_syn_notcontained.ga_data;
+		lst->len = syn_block->b_syn_notcontained.ga_len;
+	    }
+	} else if (ISSPECIAL_IDLIST(*idlist)) {
 	    short special = *idlist->list;
 	    if (special < SYNID_TOP) { /* ALLBUT */
 		lst->mode = SLOW;
@@ -2042,9 +2050,11 @@ start:
 	    } else {
 		/* No more idxs for current id */
 		for (;;) {
-		    /* Grab next id if not NULL. Pop stack */
-		    if (!*lst->pid) {
-			/* At end of current list */
+		    if (!lst->pid) {
+			/* TODO: More efficient to handle NULL list in *_init */
+			break;
+		    } else if (!*lst->pid) {
+			/* At end of current list. Pop stack if not empty. */
 			if ((lst->pid = POP_INVLOOP(lst->stk)))
 			    /* Resume popped list */
 			    continue;
