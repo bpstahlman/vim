@@ -21,13 +21,13 @@ typedef unsigned short	short_u;
 #endif
 
 #include <stdarg.h>
-#undef CFG_BPSLOG
+#define CFG_BPSLOG
 #ifdef CFG_BPSLOG
 static inline int BPSLOG(const char *fmt, ...)
 {
     static FILE *fp = NULL;
     if (!fp) {
-	fp = fopen("bps-vim.log", "a");
+	fp = fopen("bps-vim-invloop.log", "w");
     }
 #if 0 /* timestamps aren't currently useful, and they complicate diffs */
     struct timeval tm;

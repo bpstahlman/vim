@@ -1965,12 +1965,14 @@ syn_current_attr_loop_init(
 		lst->mode = IDXS;
 		lst->pidx = (int *)syn_block->b_syn_notcontained.ga_data;
 		lst->len = syn_block->b_syn_notcontained.ga_len;
+		BPSLOG("%s: Configuring IDXS for transparent toplevel (size=%d)\n", __func__, lst->len);
 	    }
 	} else if (ISSPECIAL_IDLIST(*idlist)) {
 	    short special = *idlist->list;
 	    if (special < SYNID_TOP) { /* ALLBUT */
 		lst->mode = SLOW;
 		lst->idx = syn_block->b_syn_patterns.ga_len;
+		BPSLOG("%s: Configuring SLOW (size=%d)\n", __func__, lst->idx);
 	    } else {
 		/* Note: If there's NO nextlist, but there IS a current group,
 		 * fall back to CTDIN upon exhaustion. */
@@ -1978,13 +1980,16 @@ syn_current_attr_loop_init(
 		if (special < SYNID_CONTAINED) { /* TOP */
 		    lst->pidx = (int *)syn_block->b_syn_notcontained.ga_data;
 		    lst->len = syn_block->b_syn_notcontained.ga_len;
+		    BPSLOG("%s: Configuring IDXS for TOP (size=%d)\n", __func__, lst->len);
 		} else { /* CONTAINED */
 		    lst->pidx = (int *)syn_block->b_syn_contained.ga_data;
 		    lst->len = syn_block->b_syn_contained.ga_len;
+		    BPSLOG("%s: Configuring IDXS for CONTAINED (size=%d)\n", __func__, lst->len);
 		}
 	    }
 	} else {
 	    /* Non-special include list */
+	    BPSLOG("%s: Configuring IDS for non-special\n", __func__);
 	    lst->mode = IDS;
 	    lst->pid = idlist->list;
 	    lst->nidxs = 0;
@@ -1998,6 +2003,7 @@ syn_current_attr_loop_init(
 	lst->mode = IDXS;
 	lst->pidx = (int *)syn_block->b_syn_notcontained.ga_data;
 	lst->len = syn_block->b_syn_notcontained.ga_len;
+	BPSLOG("%s: Configuring IDXS for notcontained (size=%d)\n", __func__, lst->len);
     }
     /* Decide whether to fall back to original (slow) approach in certain
      * containedin scenarios.
@@ -2013,6 +2019,7 @@ syn_current_attr_loop_init(
 	    /* Fall back to slow but sure approach. */
 	    lst->mode = SLOW;
 	    lst->idx = syn_block->b_syn_patterns.ga_len;
+	    BPSLOG("%s: Configuring SLOW fallback (size=%d)\n", __func__, lst->idx);
     }
 }
 
@@ -2094,6 +2101,33 @@ start:
     }
     /* Didn't find anything. */
     return -1;
+}
+
+    static void
+display_invloop_state(loopstate_T *lst, const char *sz)
+{
+    int idx;
+    switch (lst->mode) {
+	case SLOW:
+	    idx = lst->idx;
+	    break;
+	case IDXS:
+	case CTDIN:
+	    /* pidx, len */
+	    idx = lst->len && lst->pidx && *lst->pidx ? *lst->pidx : -1;
+	    break;
+	case IDS:
+	    idx = lst->nidxs && lst->idxs && *lst->idxs ? *lst->idxs : -1;
+	    break;
+    }
+    BPSLOG("%s:\tm(%s):\tidx: %s(%d)\n",
+	    sz,
+	    lst->mode == SLOW ? "SLOW" : lst->mode == IDS ? "IDS" : lst->mode == IDXS ? "IDXS" : "CTDIN",
+	    idx >= 0
+		? syn_id2name(SYN_ITEMS(syn_block)[idx].sp_syn.id)
+		: "INVALID",
+	    idx);
+
 }
 
 /*
@@ -2306,6 +2340,7 @@ syn_current_attr(
 		    next_match_idx = 0;		/* no match in this line yet */
 		    next_match_col = MAXCOL;
 
+		    BPSLOG("%s: ==> (%d, %d)\n", __func__, current_lnum, current_col);
 		    loopstate_T lst;
 		    BPSLOG("%s: Before syn_current_attr_loop_init idx=%d\n", __func__, idx);
 		    syn_current_attr_loop_init(&lst, current_next_list, cur_si);
@@ -2315,15 +2350,14 @@ syn_current_attr(
 		    for (;;) {
 
 			/* Get next idx (-1 if no more) using inline function. */
-			BPSLOG("%s: Before idx=%d mode=%d pidx=%p len=%d\n", __func__,
-				idx, lst.mode, lst.pidx, lst.len);
+			display_invloop_state(&lst, "Before _iter");
 			if ((idx = syn_current_attr_loop_iter(
 				&lst, current_next_list, cur_si)) < 0) {
-			    BPSLOG("%s: After idx=%d mode=%d pidx=%p len=%d\n", __func__,
-				idx, lst.mode, lst.pidx, lst.len);
+			    display_invloop_state(&lst, "End _iter");
 			    break;
 			}
 
+			display_invloop_state(&lst, "After _iter");
 			BPSLOG("%s: After idx=%d mode=%d pidx=%p len=%d\n", __func__,
 				idx, lst.mode, lst.pidx, lst.len);
 			/* Use the idx obtained by either slow or fast method
@@ -2342,9 +2376,9 @@ syn_current_attr(
 				    || (current_next_list != NULL
 					? in_id_list(NULL, current_next_list,
 					    &spp->sp_syn, 0)
-					: (cur_si == NULL || /*
+					: (cur_si == NULL
 						? !(spp->sp_flags & HL_CONTAINED)
-						:*/ in_id_list(cur_si,
+						: in_id_list(cur_si,
 						    &cur_si->si_cont_list, &spp->sp_syn,
 						    spp->sp_flags & HL_CONTAINED))))) {
 			    int r;
@@ -2368,6 +2402,12 @@ syn_current_attr(
 
 			    regmatch.rmm_ic = spp->sp_ic;
 			    regmatch.regprog = spp->sp_prog;
+			    /* ADDME! */
+			    BPSLOG("%s: syn_regexec: id=%d idx=%d (%s) eng=%s\n",
+				__func__,
+				spp->sp_syn.id, idx,
+				syn_id2name(spp->sp_syn.id),
+				spp->sp_prog->re_engine == 1 ? "BT" : "NFA");
 			    r = syn_regexec(&regmatch,
 					     current_lnum,
 					     (colnr_T)lc_col,
@@ -6757,7 +6797,7 @@ in_id_list(
      */
     /* Check non-cluster items first. */
 
-    if (idlist->ilen >= 8) {
+    if (idlist->ilen > 4) {
 	if (binsearch_sid(id, pids, idlist->ilen))
 	    return retval;
     } else {

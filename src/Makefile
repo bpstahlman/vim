@@ -655,8 +655,8 @@ LINT_OPTIONS = -beprxzF
 # Might not work with GUI or Perl.
 # After running Vim see the profile result with: gprof vim gmon.out | vim -
 # Need to recompile everything after changing this: "make clean" "make".
-#PROFILE_CFLAGS = -pg -g -DWE_ARE_PROFILING -O0
-#PROFILE_LIBS = -pg
+PROFILE_CFLAGS = -pg -g -DWE_ARE_PROFILING
+PROFILE_LIBS = -pg
 
 # GCC 5 and later need the -no-pie argument.
 #PROFILE_LIBS = -pg -no-pie
