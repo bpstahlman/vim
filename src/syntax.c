@@ -1963,8 +1963,8 @@ syn_current_attr_loop_init(
 	    if (!current_next_list && cur_si) {
 		/* Current state is transparent toplevel item. */
 		lst->mode = IDXS;
-		lst->pidx = (int *)syn_block->b_syn_notcontained.ga_data;
 		lst->len = syn_block->b_syn_notcontained.ga_len;
+		lst->pidx = (int *)syn_block->b_syn_notcontained.ga_data + lst->len;
 		BPSLOG("%s: Configuring IDXS for transparent toplevel (size=%d)\n", __func__, lst->len);
 	    }
 	} else if (ISSPECIAL_IDLIST(*idlist)) {
@@ -1978,12 +1978,12 @@ syn_current_attr_loop_init(
 		 * fall back to CTDIN upon exhaustion. */
 		lst->mode = IDXS;
 		if (special < SYNID_CONTAINED) { /* TOP */
-		    lst->pidx = (int *)syn_block->b_syn_notcontained.ga_data;
 		    lst->len = syn_block->b_syn_notcontained.ga_len;
+		    lst->pidx = (int *)syn_block->b_syn_notcontained.ga_data + lst->len;
 		    BPSLOG("%s: Configuring IDXS for TOP (size=%d)\n", __func__, lst->len);
 		} else { /* CONTAINED */
-		    lst->pidx = (int *)syn_block->b_syn_contained.ga_data;
 		    lst->len = syn_block->b_syn_contained.ga_len;
+		    lst->pidx = (int *)syn_block->b_syn_contained.ga_data + lst->len;
 		    BPSLOG("%s: Configuring IDXS for CONTAINED (size=%d)\n", __func__, lst->len);
 		}
 	    }
@@ -2001,8 +2001,8 @@ syn_current_attr_loop_init(
 	 * Process notcontained garray
 	 * Note: No fallback upon exhaustion */
 	lst->mode = IDXS;
-	lst->pidx = (int *)syn_block->b_syn_notcontained.ga_data;
 	lst->len = syn_block->b_syn_notcontained.ga_len;
+	lst->pidx = (int *)syn_block->b_syn_notcontained.ga_data + lst->len;
 	BPSLOG("%s: Configuring IDXS for notcontained (size=%d)\n", __func__, lst->len);
     }
     /* Decide whether to fall back to original (slow) approach in certain
@@ -2042,11 +2042,11 @@ start:
 	    break;
 	case IDXS:
 	case CTDIN:
-	    /* Advance to next element in growarray containing all SYN_ITEMS
+	    /* Advance to prev element in growarray containing all SYN_ITEMS
 	     * indices of a particular class: e.g., contained, notcontained,
 	     * containedin. */
 	    if (lst->len--)
-		return *lst->pidx++;
+		return *--lst->pidx;
 	    /* Current sequence exhausted */
 	    break;
 	case IDS:
@@ -2094,8 +2094,8 @@ start:
 	    syn_block->b_syn_containedin.ga_len)
     {
 	lst->mode = CTDIN;
-	lst->pidx = (int *)syn_block->b_syn_containedin.ga_data;
 	lst->len = syn_block->b_syn_containedin.ga_len;
+	lst->pidx = (int *)syn_block->b_syn_containedin.ga_data + lst->len;
 	/* Restart the function. */
 	goto start;
     }
@@ -2386,13 +2386,18 @@ syn_current_attr(
 			    BPSLOG("%s: Test passed!\n", __func__);
 
 			    /* If we already tried matching in this line, and
-			     * the previously match is at least as good as this
-			     * one (i.e., occurs before this one, or occurs in
-			     * same column, but has higher index), skip this
-			     * item. */
+			     * either didn't find a match, or found one that's
+			     * not as good as the match currently referenced by
+			     * "next_match" vars - either because it occurs
+			     * later in line, or has lower index (and therefore
+			     * lower priority) - skip matching now. */
+			    /* Note: The MAXCOL test is needed when there is no
+			     * "next_match", or it's lower priority, but we already know this pattern doesn't match. */
 			    if (spp->sp_line_id == current_line_id
-				    && (spp->sp_startcol > next_match_col ||
-				       (next_match_col == spp->sp_startcol && next_match_idx >= idx)))
+				    && (spp->sp_startcol == MAXCOL
+					|| spp->sp_startcol > next_match_col
+					|| spp->sp_startcol == next_match_col
+					&& next_match_idx >= idx))
 				continue;
 			    spp->sp_line_id = current_line_id;
 
@@ -2403,11 +2408,14 @@ syn_current_attr(
 			    regmatch.rmm_ic = spp->sp_ic;
 			    regmatch.regprog = spp->sp_prog;
 			    /* ADDME! */
-			    BPSLOG("%s: syn_regexec: id=%d idx=%d (%s) eng=%s\n",
+			    BPSLOG("%s: syn_regexec: (%d, %d): id=%d idx=%d (%s) eng=%s\n",
 				__func__,
+				current_lnum, current_col,
 				spp->sp_syn.id, idx,
 				syn_id2name(spp->sp_syn.id),
 				spp->sp_prog->re_engine == 1 ? "BT" : "NFA");
+			    BPSLOG("\tsp_line_id=%d current_line_id=%d sp_startcol=%d next_match_col=%d next_match_idx=%d\n",
+				    spp->sp_line_id, current_line_id, spp->sp_startcol, next_match_col, next_match_idx);
 			    r = syn_regexec(&regmatch,
 					     current_lnum,
 					     (colnr_T)lc_col,
@@ -2425,6 +2433,7 @@ syn_current_attr(
 			     */
 			    syn_add_start_off(&pos, &regmatch,
 							 spp, SPO_MS_OFF, -1);
+			    BPSLOG("\tMatch at (%d, %d)\n", pos.lnum, pos.col);
 			    if (pos.lnum > current_lnum)
 			    {
 				/* must have used end of match in a next line,
@@ -2441,13 +2450,17 @@ syn_current_attr(
 			    spp->sp_startcol = startcol;
 
 			    /*
-			     * If a previously found match starts at a lower
-			     * column number *or* starts at same column number
-			     * but has higher idx, skip this one.
+			     * If no match found, or a previously found match
+			     * starts at a lower column number, or starts at
+			     * same column number but has higher idx (and
+			     * therefore higher priority), don't use this one.
 			     */
-			    if (startcol > next_match_col ||
-				    (next_match_col == startcol && next_match_idx >= idx))
+			    if (startcol == MAXCOL
+				    || startcol > next_match_col
+				    || startcol == next_match_col
+				    && next_match_idx >= idx)
 				continue;
+
 
 			    /*
 			     * If we matched this pattern at this position
