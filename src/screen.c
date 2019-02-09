@@ -1828,8 +1828,11 @@ win_update(win_T *wp)
 #endif
 #ifdef SYN_TIME_LIMIT
     /* Set the time limit to 'redrawtime'. */
+    proftime_T now;
     profile_setlimit(p_rdt, &syntax_tm);
     syn_set_timeout(&syntax_tm);
+    gettimeofday(&now, NULL);
+    BPSLOG("%s: now: %d.%d\n", __func__, now.tv_sec, now.tv_usec);
 #endif
 #ifdef FEAT_FOLDING
     win_foldinfo.fi_level = 0;
