@@ -54,6 +54,15 @@ typedef struct invloop_stack_S {
 #define ISEMPTY_IDLIST(LIST) \
     (!(LIST).list || !(LIST).ilen && !(LIST).clen)
 
+/* Just what we need to save from a match */
+typedef struct
+{
+    /* Note: I'm thinking we don't need to save this here, as it's saved in spp */
+    /*regprog_T		*regprog;*/
+    lpos_T		startpos;
+    lpos_T		endpos;
+} syn_regmmatch_T;
+
 /*
  * Structure that stores information about a highlight group.
  * The ID of a highlight group is also called group ID.  It is the index in
@@ -204,6 +213,8 @@ typedef struct syn_pattern
     struct sp_syn sp_syn;		/* struct passed to in_id_list() */
     char_u	*sp_pattern;		/* regexp to match, pattern */
     regprog_T	*sp_prog;		/* regexp to match, program */
+    lpos_T	 sp_startpos0;          /* cached startpos[0] from regmmatch_T */
+    lpos_T	 sp_endpos0;		/* cached endpos[0] from regmmatch_T */
 #ifdef FEAT_PROFILE
     syn_time_T	 sp_time;
 #endif
@@ -2325,6 +2336,8 @@ syn_current_attr(
 	     */
 	    if (syn_id == 0 && syn_block->b_syn_patterns.ga_len)
 	    {
+
+		char cur_state[100] = ""; /* TEMP DEBUG */
 		/*
 		 * If we didn't check for a match yet, or we are past it, check
 		 * for any match with a pattern.
@@ -2340,32 +2353,28 @@ syn_current_attr(
 		    next_match_idx = 0;		/* no match in this line yet */
 		    next_match_col = MAXCOL;
 
+		    if (current_lnum == 60) BPSON();
 		    BPSLOG("%s: ==> (%d, %d)\n", __func__, current_lnum, current_col);
 		    loopstate_T lst;
-		    BPSLOG("%s: Before syn_current_attr_loop_init idx=%d\n", __func__, idx);
 		    syn_current_attr_loop_init(&lst, current_next_list, cur_si);
-		    BPSLOG("%s: After syn_current_attr_loop_init idx=%d\n", __func__, idx);
 
+		    const char *MODES[] = {"SLOW", "IDS", "IDXS", "CTDIN"};
 		    /* Main loop */
 		    for (;;) {
 
 			/* Get next idx (-1 if no more) using inline function. */
-			display_invloop_state(&lst, "Before _iter");
 			if ((idx = syn_current_attr_loop_iter(
 				&lst, current_next_list, cur_si)) < 0) {
-			    display_invloop_state(&lst, "End _iter");
+			    BPSLOG("End of mode %s\n", MODES[lst.mode]);
 			    break;
 			}
 
-			display_invloop_state(&lst, "After _iter");
-			BPSLOG("%s: After idx=%d mode=%d pidx=%p len=%d\n", __func__,
-				idx, lst.mode, lst.pidx, lst.len);
 			/* Use the idx obtained by either slow or fast method
 			 * to obtain the syn item to test. */
 			spp = &(SYN_ITEMS(syn_block)[idx]);
 			/* ADDME! Testing item */
-			BPSLOG("%s: Testing item %s (%d)\n", __func__,
-				syn_id2name(spp->sp_syn.id), spp->sp_syn.id);
+			BPSLOG("%s: State %s: Testing (m=%s) %s (%d [%d])\n", __func__, cur_state, MODES[lst.mode],
+				syn_id2name(spp->sp_syn.id), spp->sp_syn.id, idx);
 			if (	   spp->sp_syncing == syncing
 				&& (displaying || !(spp->sp_flags & HL_DISPLAY))
 				&& (spp->sp_type == SPTYPE_MATCH
@@ -2381,9 +2390,9 @@ syn_current_attr(
 						: in_id_list(cur_si,
 						    &cur_si->si_cont_list, &spp->sp_syn,
 						    spp->sp_flags & HL_CONTAINED))))) {
-			    int r;
+			    int r = FALSE;
 			    /* ADDME! */
-			    BPSLOG("%s: Test passed!\n", __func__);
+			    NOLOG("%s: Comparing against next_match_idx=%d\n", __func__, next_match_idx);
 
 			    /* If we already tried matching in this line, and
 			     * either didn't find a match, or found one that's
@@ -2396,9 +2405,10 @@ syn_current_attr(
 			    if (spp->sp_line_id == current_line_id
 				    && (spp->sp_startcol == MAXCOL
 					|| spp->sp_startcol > next_match_col
-					|| spp->sp_startcol == next_match_col
-					&& next_match_idx >= idx))
+					|| (spp->sp_startcol == next_match_col
+					    && next_match_idx >= idx)))
 				continue;
+			    int sp_line_id = spp->sp_line_id;
 			    spp->sp_line_id = current_line_id;
 
 			    lc_col = current_col - spp->sp_offsets[SPO_LC_OFF];
@@ -2407,26 +2417,62 @@ syn_current_attr(
 
 			    regmatch.rmm_ic = spp->sp_ic;
 			    regmatch.regprog = spp->sp_prog;
-			    /* ADDME! */
-			    BPSLOG("%s: syn_regexec: (%d, %d): id=%d idx=%d (%s) eng=%s\n",
-				__func__,
-				current_lnum, current_col,
-				spp->sp_syn.id, idx,
-				syn_id2name(spp->sp_syn.id),
-				spp->sp_prog->re_engine == 1 ? "BT" : "NFA");
-			    BPSLOG("\tsp_line_id=%d current_line_id=%d sp_startcol=%d next_match_col=%d next_match_idx=%d\n",
-				    spp->sp_line_id, current_line_id, spp->sp_startcol, next_match_col, next_match_idx);
-			    r = syn_regexec(&regmatch,
-					     current_lnum,
-					     (colnr_T)lc_col,
-					     IF_SYN_TIME(&spp->sp_time));
-			    spp->sp_prog = regmatch.regprog;
-			    if (!r)
+			    static int dbg_cache_cnt = 0;
+			    NOLOG("sp_line_id=%d current_line_id=%d spp->sp_startcol=%d spp->sp_startpos0.col=%d lc_col=%d\n",
+				    sp_line_id, current_line_id, spp->sp_startcol, spp->sp_startpos0.col, lc_col);
+			    /* TODO: Check any cached match to see whether we can skip the call to syn_regexec. */
+			    /* FIXME: Need to use *old* sp_line_id for this test!!!!! Before assignment above! */
+			    if (sp_line_id == current_line_id)
 			    {
-				/* no match in this line, try another one */
-				spp->sp_startcol = MAXCOL;
-				continue;
+				/* We've already attempted match on this line. */
+				if (spp->sp_startcol == MAXCOL)
+				    /* No match on this line. */
+				    continue;
+				else if (spp->sp_startpos0.col >= lc_col) {
+				    BPSLOG("%s: Using #%d cache - %s\n", __func__, ++dbg_cache_cnt,
+					    syn_id2name(spp->sp_syn.id));
+				    /* We have a cached match and it's still valid.
+				     * Populate needed portions of regmatch.
+				     * Note: spp->sp_prog can't change since we're skipping syn_regexec(). */
+				    regmatch.startpos[0] = spp->sp_startpos0;
+				    regmatch.endpos[0] = spp->sp_endpos0;
+				    r = TRUE;
+				}
 			    }
+			    /* Skip call to syn_regexec if we have a cached match. */
+			    if (!r) {
+				/* ADDME! */
+				BPSLOG("%s: syn_regexec: (%d, %d): id=%d idx=%d (%s) eng=%s\n",
+				    __func__,
+				    current_lnum, current_col,
+				    spp->sp_syn.id, idx,
+				    syn_id2name(spp->sp_syn.id),
+				    spp->sp_prog->re_engine == 1 ? "BT" : "NFA");
+				NOLOG("\tsp_line_id=%d current_line_id=%d sp_startcol=%d next_match_col=%d next_match_idx=%d\n",
+					spp->sp_line_id, current_line_id, spp->sp_startcol, next_match_col, next_match_idx);
+				/* TODO: Consider moving assignments to rmm_ic
+				 * and regprog (above) down here. (I'm assuming
+				 * they're needed only when we call
+				 * syn_regexec. */
+				r = syn_regexec(&regmatch,
+						 current_lnum,
+						 (colnr_T)lc_col,
+						 IF_SYN_TIME(&spp->sp_time));
+				BPSLOG("Result %d\n", r);
+				spp->sp_prog = regmatch.regprog;
+				if (!r)
+				{
+				    /* no match in this line, try another one */
+				    spp->sp_startcol = MAXCOL;
+				    continue;
+				}
+				/* Cache raw positions, which may obviate need for call to syn_regexec next time. */
+				/* TODO: Decide whether we should be caching the adjusted positions instead. */
+				spp->sp_startpos0 = regmatch.startpos[0];
+				spp->sp_endpos0 = regmatch.endpos[0];
+			    }
+
+
 
 			    /*
 			     * Compute the first column of the match.
@@ -2436,6 +2482,7 @@ syn_current_attr(
 			    BPSLOG("\tMatch at (%d, %d)\n", pos.lnum, pos.col);
 			    if (pos.lnum > current_lnum)
 			    {
+				BPSLOG("EOL in next line\n");
 				/* must have used end of match in a next line,
 				 * we can't handle that */
 				spp->sp_startcol = MAXCOL;
@@ -2443,7 +2490,7 @@ syn_current_attr(
 			    }
 			    startcol = pos.col;
 			    /* ADDME! Found match */
-			    BPSLOG("%s: Regex matched at line=%d col=%d!\n", __func__, pos.lnum, pos.col);
+			    BPSLOG("%s: Match @ (%d, %d)\n", __func__, pos.lnum, pos.col);
 
 			    /* remember the next column where this pattern
 			     * matches in the current line */
@@ -2580,14 +2627,14 @@ main_loop_done:
 		     * don't push the item but set nextgroup. */
 		    lspp = &(SYN_ITEMS(syn_block)[next_match_idx]);
 		    /* ADDME! Matched at cur col */
-		    BPSLOG("%s: Using match %s at cur col\n", __func__,
+		    NOLOG("%s: Using match %s at cur col\n", __func__,
 			    syn_id2name(lspp->sp_syn.id));
 		    if (next_match_m_endpos.lnum == current_lnum
 			    && next_match_m_endpos.col == current_col
 			    && !ISNULL_IDLIST(lspp->sp_next_list))
 		    {
 			/* ADDME! Using zw item's nextgroup */
-			BPSLOG("%s: Using zero-width item's nextgroup\n", __func__);
+			NOLOG("%s: Using zero-width item's nextgroup\n", __func__);
 			current_next_list = &lspp->sp_next_list;
 			current_next_flags = lspp->sp_flags;
 			keep_next_list = TRUE;
@@ -2643,7 +2690,7 @@ main_loop_done:
 	     * match was found don't loop (would get stuck).
 	     */
 	    /* ADDME! Using nextgroup match and continuing to look for contained matches */
-	    BPSLOG("%s: Using nextgroup match!\n", __func__);
+	    NOLOG("%s: Using nextgroup match!\n", __func__);
 	    current_next_list = NULL;
 	    next_match_idx = -1;
 	    if (!zero_width_next_list)
@@ -3675,6 +3722,9 @@ syn_regexec(
 #ifdef FEAT_RELTIME
     if (timed_out && !syn_win->w_s->b_syn_slow)
     {
+	proftime_T now;
+	gettimeofday(&now, NULL);
+	BPSLOG("%s: now: %d.%d timeout: %d.%d\n", __func__, now.tv_sec, now.tv_usec, syn_tm->tv_sec, syn_tm->tv_usec);
 	syn_win->w_s->b_syn_slow = TRUE;
 	MSG(_("'redrawtime' exceeded, syntax highlighting disabled"));
     }

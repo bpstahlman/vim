@@ -23,16 +23,27 @@ typedef unsigned short	short_u;
 #include <stdarg.h>
 #undef CFG_BPSLOG
 #ifdef CFG_BPSLOG
-static inline int BPSLOG(const char *fmt, ...)
+static FILE *fp = NULL;
+static long init_ticks = -1;
+static inline void BPSON()
 {
-    static FILE *fp = NULL;
     if (!fp) {
 	fp = fopen("bps-vim-invloop.log", "w");
+	init_ticks = clock();
     }
-#if 0 /* timestamps aren't currently useful, and they complicate diffs */
+}
+static inline int BPSLOG(const char *fmt, ...)
+{
+    if (!fp)
+	return 0;
+    long tick = clock();
+#if 1 /* timestamps aren't currently useful, and they complicate diffs */
+    /*
     struct timeval tm;
     gettimeofday(&tm, NULL);
-    fprintf(fp, "%010ld.%03ld: ", tm.tv_sec, tm.tv_usec / 1000L);
+    */
+    /* Display relative usec */
+    fprintf(fp, "%015ld: ", 1000000ULL * (tick - init_ticks) / CLOCKS_PER_SEC);
 #endif
     va_list args;
     va_start(args, fmt);
@@ -43,7 +54,9 @@ static inline int BPSLOG(const char *fmt, ...)
 }
 #else
 #define BPSLOG(fmt,...)
+#define BPSON()
 #endif
+#define NOLOG(fmt,...)
 
 /*
  * position in file or buffer
