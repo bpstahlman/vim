@@ -1646,7 +1646,9 @@ syn_stack_equal(synstate_T *sp)
 
     /* First a quick check if the stacks have the same size and nextlist. */
     if (sp->sst_stacksize == current_state.ga_len
-	    && sp->sst_next_list.list == current_next_list->list)
+	    && (current_next_list
+		? sp->sst_next_list.list == current_next_list->list
+		: !sp->sst_next_list.list))
     {
 	/* Need to compare all states on both stacks. */
 	if (sp->sst_stacksize > SST_FIX_STATES)
